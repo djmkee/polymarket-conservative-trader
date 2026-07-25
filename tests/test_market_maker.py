@@ -268,7 +268,10 @@ def test_filled_pair_merges_to_cash_and_realizes_locked_edge(tmp_path):
     assert result["maker_pairs_merged"] == 1
     assert Decimal(store.paper_summary()["realized_pnl"]) > 0
     assert store.directional() == {}
-    assert Decimal(store.dashboard_state()["performance"]["paired_pnl"]) > 0
+    dashboard = store.dashboard_state()
+    assert Decimal(dashboard["performance"]["paired_pnl"]) > 0
+    assert dashboard["trade_history"][0]["action"] == "PAIR MERGED"
+    assert Decimal(dashboard["trade_history"][0]["realized_profit"]) > 0
     store.close()
 
 
@@ -294,6 +297,7 @@ def test_expired_one_leg_uses_capped_opposite_hedge(tmp_path):
     assert result["maker_hedge_exits"] == 1
     assert result["maker_pairs_merged"] == 1
     assert store.directional() == {}
+    assert store.paper_summary()["fills"] == 1
     store.close()
 
 
@@ -321,6 +325,7 @@ def test_old_one_leg_is_force_flattened_instead_of_held_to_resolution(tmp_path):
 
     assert result["maker_hedge_exits"] == 1
     assert store.directional() == {}
+    assert store.paper_summary()["fills"] == 1
     event = store.db.execute(
         "SELECT payload FROM events WHERE kind = 'paper_hedge_flattened'"
     ).fetchone()
@@ -406,4 +411,22 @@ def test_manual_close_uses_latest_bid_and_updates_dashboard(tmp_path):
     assert Decimal(dashboard["account"]["realized_pnl"]) > 0
     assert Decimal(dashboard["performance"]["directional_pnl"]) > 0
     assert dashboard["fills"][0]["side"] == "SELL"
+    store.close()
+
+
+def test_dashboard_keeps_last_quote_target_during_requote_gap(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    PaperMarketMaker(Settings(maker_max_markets=1), store)
+    store.record(
+        "realtime_cycle",
+        {
+            "maker_markets": 1,
+            "maker_quotes": 3,
+        },
+    )
+
+    dashboard = store.dashboard_state()
+
+    assert dashboard["quotes"] == []
+    assert dashboard["quote_target_count"] == 3
     store.close()

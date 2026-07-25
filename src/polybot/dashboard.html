@@ -66,7 +66,7 @@
       <div class="card"><div class="label">Cash</div><div id="cash" class="value">—</div><div class="mini">Available paper capital</div></div>
       <div class="card"><div class="label">Realized P&amp;L</div><div id="realized" class="value">—</div><div class="mini">After simulated costs</div></div>
       <div class="card"><div class="label">Unrealized P&amp;L</div><div id="unrealized" class="value">—</div><div class="mini">Directional positions only</div></div>
-      <div class="card"><div class="label">Open quotes</div><div id="quoteCount" class="value">—</div><div class="mini">Conservative paper orders</div></div>
+      <div class="card"><div class="label">Quote targets</div><div id="quoteCount" class="value">—</div><div class="mini">Current cycle; refreshed continuously</div></div>
       <div class="card"><div class="label">Total fees</div><div id="fees" class="value">—</div><div class="mini">Worst-case estimate</div></div>
     </section>
 
@@ -76,13 +76,19 @@
           <div class="panel-head"><h2>Positions &amp; hedge state</h2><span id="positionCount" class="badge">0 tokens</span></div>
           <div class="body"><table><thead><tr><th>Market</th><th>Outcome</th><th>Inventory</th>
             <th>Directional</th><th>Avg cost</th><th>Bid / ask</th><th>P&amp;L</th><th></th></tr></thead>
-            <tbody id="positions"></tbody></table><div id="positionsEmpty" class="empty">Waiting for positions…</div></div>
+            <tbody id="positions"></tbody></table><div id="positionsEmpty" class="empty">No position held now. Closed cycles remain visible below.</div></div>
         </div>
         <div class="panel section">
           <div class="panel-head"><h2>Recent fills</h2><span id="fillCount" class="badge">0 fills</span></div>
           <div class="body"><table><thead><tr><th>Time</th><th>Token</th><th>Side</th><th>Price</th>
             <th>Shares</th><th>Notional</th></tr></thead><tbody id="fills"></tbody></table>
             <div id="fillsEmpty" class="empty">No simulated fills yet.</div></div>
+        </div>
+        <div class="panel section">
+          <div class="panel-head"><h2>Completed trade cycles</h2><span id="tradeCount" class="badge">0 exits</span></div>
+          <div class="body"><table><thead><tr><th>Time</th><th>Market</th><th>Exit</th><th>Outcome</th>
+            <th>Shares</th><th>Held</th><th>P&amp;L</th></tr></thead><tbody id="trades"></tbody></table>
+            <div id="tradesEmpty" class="empty">No completed position cycle yet.</div></div>
         </div>
       </div>
       <aside class="stack">
@@ -124,6 +130,8 @@
     const num = (value, d=2) => Number(value || 0).toLocaleString(undefined,{maximumFractionDigits:d});
     const esc = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const short = value => value ? `${value.slice(0,6)}…${value.slice(-4)}` : '—';
+    const duration = value => value===null||value===undefined ? '—'
+      : Number(value)<60 ? `${num(value,0)}s` : `${num(Number(value)/60,1)}m`;
     const pnlClass = value => Number(value) > 0 ? 'pnl-pos' : Number(value) < 0 ? 'pnl-neg' : '';
     function setPnl(id,value){ const el=$(id); el.textContent=money(value); el.className=`value ${Number(value)>=0?'pos':'neg'}`; }
     function toast(message,error=false){const el=$('toast');el.textContent=message;el.className=`toast${error?' error':''}`;el.style.display='block';setTimeout(()=>el.style.display='none',4500)}
@@ -169,7 +177,7 @@
     function render(state){
       const a=state.account;$('equity').textContent=money(a.equity);$('cash').textContent=money(a.cash);
       setPnl('realized',a.realized_pnl);setPnl('unrealized',a.unrealized_pnl);$('fees').textContent=money(a.fees);
-      $('quoteCount').textContent=state.quotes.length;$('positionCount').textContent=`${state.positions.length} tokens`;
+      $('quoteCount').textContent=state.quote_target_count??state.quotes.length;$('positionCount').textContent=`${state.positions.length} tokens`;
       const s=state.strategy||{};
       $('sizingMode').textContent=s.compound
         ? `${num(Number(s.order_equity_pct)*100,2)}% (min ${num(s.minimum_shares,2)} shares)`
@@ -195,6 +203,12 @@
       $('fills').innerHTML=state.fills.map(f=>`<tr><td>${new Date(f.created_at).toLocaleTimeString()}</td>
         <td class="muted">${short(f.token_id)}</td><td class="${f.side==='BUY'?'yes':'pnl-neg'}">${f.side}</td>
         <td>${num(f.price,4)}</td><td>${num(f.size,4)}</td><td>${money(f.notional)}</td></tr>`).join('');
+      const trades=state.trade_history||[];
+      $('tradeCount').textContent=`${trades.length} exits`;$('tradesEmpty').style.display=trades.length?'none':'block';
+      $('trades').innerHTML=trades.map(t=>`<tr><td>${new Date(t.created_at).toLocaleTimeString()}</td>
+        <td class="question">${esc(t.question)}</td><td>${esc(t.action)}</td><td>${esc(t.outcome)}</td>
+        <td>${num(t.shares,4)}</td><td>${duration(t.held_seconds)}</td>
+        <td class="${pnlClass(t.realized_profit)}">${money(t.realized_profit)}</td></tr>`).join('');
       $('events').innerHTML=state.events.length?state.events.map(e=>`<div class="event"><span class="event-dot"></span><div>
         <div class="event-title">${esc(eventText(e))}</div><div class="event-meta">${new Date(e.created_at).toLocaleString()}</div></div></div>`).join('')
         :'<div class="empty">No activity recorded yet.</div>';

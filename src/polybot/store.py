@@ -462,6 +462,75 @@ class AuditStore:
             """SELECT created_at, kind, payload FROM events
                ORDER BY id DESC LIMIT 50"""
         ).fetchall()
+        latest_cycle = self.db.execute(
+            """SELECT payload FROM events WHERE kind = 'realtime_cycle'
+               ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        latest_cycle_payload = json.loads(latest_cycle[0]) if latest_cycle else {}
+        inventory_metadata = self.db.execute(
+            """SELECT token_id, condition_id, question, outcome
+               FROM paper_inventory"""
+        ).fetchall()
+        metadata_by_token = {
+            row[0]: {
+                "condition_id": row[1],
+                "question": row[2],
+                "outcome": row[3],
+            }
+            for row in inventory_metadata
+        }
+        metadata_by_condition = {
+            row[1]: {
+                "question": row[2],
+            }
+            for row in inventory_metadata
+        }
+        trade_events = self.db.execute(
+            """SELECT created_at, kind, payload FROM events
+               WHERE kind IN (
+                   'paper_pair_merged',
+                   'paper_profit_exit',
+                   'paper_hedge_flattened',
+                   'paper_manual_close'
+               )
+               ORDER BY id DESC LIMIT 50"""
+        ).fetchall()
+        trade_history = []
+        action_names = {
+            "paper_pair_merged": "PAIR MERGED",
+            "paper_profit_exit": "PROFIT EXIT",
+            "paper_hedge_flattened": "RISK EXIT",
+            "paper_manual_close": "MANUAL EXIT",
+        }
+        for created_at, kind, raw_payload in trade_events:
+            payload = json.loads(raw_payload)
+            token_metadata = metadata_by_token.get(str(payload.get("token_id")), {})
+            condition_metadata = metadata_by_condition.get(
+                str(payload.get("condition_id")), {}
+            )
+            action = action_names[kind]
+            if kind == "paper_hedge_flattened" and payload.get("forced"):
+                action = "FORCED EXIT"
+            trade_history.append(
+                {
+                    "created_at": created_at,
+                    "action": action,
+                    "question": (
+                        payload.get("question")
+                        or token_metadata.get("question")
+                        or condition_metadata.get("question")
+                        or "Unknown market"
+                    ),
+                    "outcome": (
+                        payload.get("outcome")
+                        or token_metadata.get("outcome")
+                        or "YES + NO"
+                    ),
+                    "shares": str(payload.get("shares", "0")),
+                    "held_seconds": payload.get("held_seconds"),
+                    "realized_profit": str(payload.get("realized_profit", "0")),
+                }
+            )
         performance = self.db.execute(
             """SELECT
                    COALESCE(SUM(CASE WHEN kind = 'paper_pair_merged'
@@ -491,6 +560,10 @@ class AuditStore:
                 "fees": metrics[1],
             },
             "positions": positions,
+            "quote_target_count": int(
+                latest_cycle_payload.get("maker_quotes", len(quotes))
+            ),
+            "trade_history": trade_history,
             "performance": {
                 "paired_pnl": str(performance[0]),
                 "directional_pnl": str(performance[1]),

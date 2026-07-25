@@ -278,15 +278,25 @@ class PaperMarketMaker:
             )
             cash += shares
             profit = shares - yes_cost - no_cost
+            opened_at = min(
+                datetime.fromisoformat(str(yes["opened_at"])),
+                datetime.fromisoformat(str(no["opened_at"])),
+            )
             self.store.add_paper_metrics(str(profit), "0")
             self.store.record(
                 "paper_pair_merged",
                 {
                     "condition_id": market.condition_id,
+                    "question": market.question,
+                    "outcome": "YES + NO",
                     "shares": shares,
                     "combined_cost": yes_cost + no_cost,
                     "payout": shares,
                     "realized_profit": profit,
+                    "opened_at": opened_at.isoformat(),
+                    "held_seconds": (
+                        datetime.now(UTC) - opened_at
+                    ).total_seconds(),
                 },
             )
             merged += 1
@@ -344,12 +354,20 @@ class PaperMarketMaker:
                 "paper_profit_exit",
                 {
                     "token_id": token_id,
+                    "condition_id": item["condition_id"],
+                    "question": item["question"],
+                    "outcome": item["outcome"],
                     "shares": shares,
                     "bid": bid,
                     "average_cost": average_cost,
                     "fee": fee,
                     "slippage": slippage * shares,
                     "realized_profit": proceeds - sold_cost,
+                    "opened_at": position["opened_at"],
+                    "held_seconds": (
+                        datetime.now(UTC)
+                        - datetime.fromisoformat(str(position["opened_at"]))
+                    ).total_seconds(),
                 },
             )
             exits += 1
@@ -402,11 +420,21 @@ class PaperMarketMaker:
         self.store.add_fill(quote_id, token_id, "SELL", str(bid), str(shares))
         result = {
             "token_id": token_id,
+            "condition_id": inventory["condition_id"],
+            "question": inventory["question"],
+            "outcome": inventory["outcome"],
             "shares": str(shares),
             "bid": str(bid),
             "net_price": str(net_price),
             "fee": str(fee),
             "realized_profit": str(profit),
+            "opened_at": directional["opened_at"],
+            "held_seconds": str(
+                (
+                    datetime.now(UTC)
+                    - datetime.fromisoformat(str(directional["opened_at"]))
+                ).total_seconds()
+            ),
         }
         self.store.record("paper_manual_close", result)
         return result
@@ -465,15 +493,31 @@ class PaperMarketMaker:
                 pair_profit >= -self.s.maker_max_flatten_loss_per_share
                 and cash >= hedge_notional
             ):
+                opposite_outcome = "NO" if outcome == "YES" else "YES"
                 self.store.adjust_inventory(
                     opposite_token,
                     market.condition_id,
                     market.question,
-                    "NO" if outcome == "YES" else "YES",
+                    opposite_outcome,
                     str(shares),
                 )
                 self.store.add_directional_buy(
                     opposite_token, str(shares), str(hedge_notional)
+                )
+                quote_id = self.store.add_quote(
+                    opposite_token,
+                    market.condition_id,
+                    opposite_outcome,
+                    "BUY",
+                    str(opposite_ask),
+                    str(shares),
+                )
+                self.store.add_fill(
+                    quote_id,
+                    opposite_token,
+                    "BUY",
+                    str(opposite_ask),
+                    str(shares),
                 )
                 cash -= hedge_notional
                 self.store.add_paper_metrics("0", str(opposite_fee * shares))
@@ -481,10 +525,14 @@ class PaperMarketMaker:
                     "paper_hedge_escalated",
                     {
                         "condition_id": market.condition_id,
+                        "question": market.question,
                         "held_outcome": outcome,
+                        "hedge_outcome": opposite_outcome,
                         "shares": shares,
                         "opposite_ask": opposite_ask,
                         "projected_pair_profit_per_share": pair_profit,
+                        "opened_at": position["opened_at"],
+                        "held_seconds": age_seconds,
                     },
                 )
                 resolved += 1
@@ -524,15 +572,33 @@ class PaperMarketMaker:
             self.store.add_paper_metrics(
                 str(proceeds - sold_cost), str(fee_per_share * shares)
             )
+            quote_id = self.store.add_quote(
+                token_id,
+                market.condition_id,
+                outcome,
+                "SELL",
+                str(bid),
+                str(shares),
+            )
+            self.store.add_fill(
+                quote_id,
+                token_id,
+                "SELL",
+                str(bid),
+                str(shares),
+            )
             self.store.record(
                 "paper_hedge_flattened",
                 {
                     "condition_id": market.condition_id,
+                    "question": market.question,
                     "outcome": outcome,
                     "shares": shares,
                     "net_price": net_price,
                     "realized_profit": proceeds - sold_cost,
                     "forced": force_flatten,
+                    "opened_at": position["opened_at"],
+                    "held_seconds": age_seconds,
                 },
             )
             resolved += 1
