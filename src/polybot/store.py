@@ -24,3 +24,19 @@ class AuditStore:
 
     def close(self) -> None:
         self.db.close()
+
+    def summary(self) -> dict[str, Any]:
+        counts = dict(
+            self.db.execute(
+                "SELECT kind, COUNT(*) FROM events GROUP BY kind ORDER BY kind"
+            ).fetchall()
+        )
+        latest = self.db.execute(
+            "SELECT created_at, payload FROM events WHERE kind = 'cycle' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return {
+            "total_events": sum(counts.values()),
+            "counts": counts,
+            "latest_cycle_at": latest[0] if latest else None,
+            "latest_cycle": json.loads(latest[1]) if latest else None,
+        }
