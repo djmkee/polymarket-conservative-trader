@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 
 from .config import Settings
-from .models import Market
+from .models import Market, MarketGroup
 
 
 def _jsonish(value: Any) -> list[Any]:
@@ -67,33 +67,75 @@ class GammaClient:
                 break
         result: list[Market] = []
         for raw in raw_markets:
-            outcomes = [str(x).upper() for x in _jsonish(raw.get("outcomes"))]
-            tokens = [str(x) for x in _jsonish(raw.get("clobTokenIds"))]
-            prices = [_decimal(x) for x in _jsonish(raw.get("outcomePrices"))]
-            if len(outcomes) != 2 or len(tokens) != 2 or len(prices) != 2:
+            market = self._parse_market(raw, require_liquidity=True)
+            if market:
+                result.append(market)
+        return result
+
+    async def active_negative_risk_groups(self) -> list[MarketGroup]:
+        response = await self.client.get(
+            "/events",
+            params={
+                "active": "true",
+                "closed": "false",
+                "limit": self.settings.neg_risk_event_limit,
+                "order": "liquidity",
+                "ascending": "false",
+            },
+        )
+        response.raise_for_status()
+        groups: list[MarketGroup] = []
+        for event in response.json():
+            raw_markets = event.get("markets") or []
+            if not event.get("negRisk") or not 3 <= len(raw_markets) <= self.settings.neg_risk_max_outcomes:
                 continue
-            liquidity = _decimal(raw.get("liquidityNum", raw.get("liquidity", 0)))
-            if liquidity < self.settings.min_liquidity:
+            # Completeness is mandatory: if any event leg is inactive, closed,
+            # malformed, or missing tokens, reject the whole event.
+            if any(not item.get("active") or item.get("closed") for item in raw_markets):
                 continue
-            # Gamma midpoint is a discovery fallback. The execution scanner will
-            # replace these with CLOB bid/ask snapshots before any order decision.
-            yes, no = prices
-            spread = Decimal("0.01")
-            result.append(
-                Market(
-                    condition_id=str(raw.get("conditionId", "")),
-                    question=str(raw.get("question", "")),
-                    yes_token=tokens[0],
-                    no_token=tokens[1],
-                    yes_ask=min(Decimal("0.999"), yes + spread / 2),
-                    no_ask=min(Decimal("0.999"), no + spread / 2),
-                    yes_bid=max(Decimal("0.001"), yes - spread / 2),
-                    no_bid=max(Decimal("0.001"), no - spread / 2),
-                    liquidity=liquidity,
-                    end_time=_time(raw.get("endDate")),
+            parsed = [self._parse_market(item, require_liquidity=False) for item in raw_markets]
+            if any(item is None for item in parsed):
+                continue
+            groups.append(
+                MarketGroup(
+                    event_id=str(event.get("id", "")),
+                    title=str(event.get("title", "")),
+                    neg_risk_id=str(event.get("negRiskMarketID", "")),
+                    markets=tuple(item for item in parsed if item),
                 )
             )
-        return result
+        return groups
+
+    def _parse_market(self, raw: dict[str, Any], require_liquidity: bool) -> Market | None:
+        outcomes = [str(x).upper() for x in _jsonish(raw.get("outcomes"))]
+        tokens = [str(x) for x in _jsonish(raw.get("clobTokenIds"))]
+        prices = [_decimal(x) for x in _jsonish(raw.get("outcomePrices"))]
+        if len(outcomes) != 2 or len(tokens) != 2 or len(prices) != 2:
+            return None
+        if "YES" not in outcomes or "NO" not in outcomes:
+            if require_liquidity:
+                yes_index, no_index = 0, 1
+            else:
+                return None
+        else:
+            yes_index, no_index = outcomes.index("YES"), outcomes.index("NO")
+        liquidity = _decimal(raw.get("liquidityNum", raw.get("liquidity", 0)))
+        if require_liquidity and liquidity < self.settings.min_liquidity:
+            return None
+        yes, no = prices[yes_index], prices[no_index]
+        spread = Decimal("0.01")
+        return Market(
+            condition_id=str(raw.get("conditionId", "")),
+            question=str(raw.get("question", "")),
+            yes_token=tokens[yes_index],
+            no_token=tokens[no_index],
+            yes_ask=min(Decimal("0.999"), yes + spread / 2),
+            no_ask=min(Decimal("0.999"), no + spread / 2),
+            yes_bid=max(Decimal("0.001"), yes - spread / 2),
+            no_bid=max(Decimal("0.001"), no - spread / 2),
+            liquidity=liquidity,
+            end_time=_time(raw.get("endDate")),
+        )
 
 
 class ClobClient:
@@ -153,6 +195,28 @@ class ClobClient:
                 )
             )
         return hydrated
+
+    async def executable_groups(self, groups: list[MarketGroup]) -> list[MarketGroup]:
+        all_markets = [market for group in groups for market in group.markets]
+        hydrated = await self.executable_books(all_markets)
+        by_condition = {market.condition_id: market for market in hydrated}
+        result: list[MarketGroup] = []
+        for group in groups:
+            members = tuple(
+                by_condition[market.condition_id]
+                for market in group.markets
+                if market.condition_id in by_condition
+            )
+            if len(members) == len(group.markets):
+                result.append(
+                    MarketGroup(
+                        event_id=group.event_id,
+                        title=group.title,
+                        neg_risk_id=group.neg_risk_id,
+                        markets=members,
+                    )
+                )
+        return result
 
     @staticmethod
     def _levels(book: dict[str, Any]) -> tuple[list[tuple[Decimal, Decimal]], list[tuple[Decimal, Decimal]]]:
