@@ -15,6 +15,7 @@ class PaperMarketMaker:
         self.store.init_paper_account(str(settings.initial_equity))
 
     def run(self, markets: list[Market]) -> dict[str, int | str | bool]:
+        released = self._release_balanced_inventory()
         self._record_snapshots(markets)
         token_books = self._token_books(markets)
         fills = self._settle_quotes(token_books)
@@ -23,7 +24,6 @@ class PaperMarketMaker:
         hedge_exits = self._resolve_expired_hedges(markets, token_books)
         merged += self._merge_directional_pairs(markets)
         selected = self._select_markets(markets)
-        seeded = self._seed_complete_sets(selected)
         equity = self._equity(token_books)
         account = self.store.paper_account()
         peak = max(Decimal(account["peak_equity"]), equity)
@@ -34,7 +34,8 @@ class PaperMarketMaker:
         quotes = 0 if halted else self._place_quotes(selected)
         return {
             "maker_markets": len(selected),
-            "maker_seeded": seeded,
+            "maker_seeded": 0,
+            "maker_balanced_redeemed": released,
             "maker_fills": fills,
             "maker_pairs_merged": merged,
             "maker_profit_exits": profit_exits,
@@ -69,9 +70,12 @@ class PaperMarketMaker:
                 continue
             if self._market_book_is_stale(market, now):
                 continue
-            if market.end_time and market.end_time <= now + timedelta(
-                hours=self.s.maker_min_hours_to_end
-            ):
+            if not market.end_time:
+                continue
+            time_to_end = market.end_time - now
+            if time_to_end <= timedelta(hours=self.s.maker_min_hours_to_end):
+                continue
+            if time_to_end > timedelta(hours=self.s.maker_max_hours_to_end):
                 continue
             prices = (market.yes_bid, market.yes_ask, market.no_bid, market.no_ask)
             if min(prices) < self.s.maker_min_price or max(prices) > self.s.maker_max_price:
@@ -87,37 +91,66 @@ class PaperMarketMaker:
         new_markets = [item[0] for item in eligible[:available_new_slots]]
         return existing_markets[: self.s.maker_max_markets] + new_markets
 
-    def _seed_complete_sets(self, markets: list[Market]) -> int:
+    def _release_balanced_inventory(self) -> int:
+        """Return non-directional YES/NO pairs to paper cash immediately.
+
+        Older releases seeded complete sets merely to initialize inventory. Those
+        pairs have no directional exposure and can be merged for $1 without
+        waiting for market resolution. Directional cost-basis shares are kept.
+        """
         account = self.store.paper_account()
         cash = Decimal(account["cash"])
         inventory = self.store.inventory()
-        existing = {item["condition_id"] for item in inventory}
-        total_seeded = self._balanced_inventory_capital(inventory)
-        equity = self._equity(self._token_books(markets))
-        capital_cap = self._maker_capital_cap(equity)
-        seeded = 0
-        for market in markets:
-            if market.condition_id in existing:
+        directional = self.store.directional()
+        by_condition: dict[str, dict[str, dict[str, str]]] = {}
+        for item in inventory:
+            by_condition.setdefault(item["condition_id"], {})[item["outcome"]] = item
+        released = 0
+        for condition_id, outcomes in by_condition.items():
+            yes = outcomes.get("YES")
+            no = outcomes.get("NO")
+            if not yes or not no:
                 continue
-            shares = self._order_size(market, equity)
+            yes_directional = Decimal(
+                directional.get(yes["token_id"], {}).get("shares", "0")
+            )
+            no_directional = Decimal(
+                directional.get(no["token_id"], {}).get("shares", "0")
+            )
+            shares = min(
+                max(Decimal(0), Decimal(yes["shares"]) - yes_directional),
+                max(Decimal(0), Decimal(no["shares"]) - no_directional),
+            )
             if shares <= 0:
                 continue
-            if (
-                cash < shares
-                or total_seeded + shares > capital_cap
-            ):
-                continue
             self.store.adjust_inventory(
-                market.yes_token, market.condition_id, market.question, "YES", str(shares)
+                yes["token_id"],
+                condition_id,
+                yes["question"],
+                "YES",
+                str(-shares),
             )
             self.store.adjust_inventory(
-                market.no_token, market.condition_id, market.question, "NO", str(shares)
+                no["token_id"],
+                condition_id,
+                no["question"],
+                "NO",
+                str(-shares),
             )
-            cash -= shares
-            total_seeded += shares
-            seeded += 1
+            cash += shares
+            self.store.record(
+                "paper_balanced_redeemed",
+                {
+                    "condition_id": condition_id,
+                    "question": yes["question"],
+                    "shares": shares,
+                    "payout": shares,
+                    "reason": "legacy_seed_release",
+                },
+            )
+            released += 1
         self.store.set_paper_account(str(cash), account["peak_equity"])
-        return seeded
+        return released
 
     def _settle_quotes(self, books: dict[str, dict[str, Decimal | str]]) -> int:
         account = self.store.paper_account()

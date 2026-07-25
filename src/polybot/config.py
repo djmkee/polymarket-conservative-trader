@@ -30,7 +30,8 @@ class Settings(BaseSettings):
     maker_min_spread: Decimal = Decimal("0.02")
     maker_min_price: Decimal = Decimal("0.15")
     maker_max_price: Decimal = Decimal("0.85")
-    maker_min_hours_to_end: int = 48
+    maker_min_hours_to_end: int = 6
+    maker_max_hours_to_end: int = 720
     maker_max_capital: Decimal = Decimal(60)
     maker_take_profit_per_share: Decimal = Decimal("0.005")
     maker_max_fee_rate: Decimal = Decimal("0.07")
@@ -116,4 +117,11 @@ class Settings(BaseSettings):
             raise ValueError("realtime_max_markets must be between 1 and 200.")
         if not 0 < self.maker_min_price < self.maker_max_price < 1:
             raise ValueError("Invalid maker price range.")
+        if (
+            self.maker_min_hours_to_end < 1
+            or self.maker_max_hours_to_end <= self.maker_min_hours_to_end
+        ):
+            raise ValueError(
+                "Maker end-time window must be positive and max must exceed min."
+            )
         return self

@@ -40,13 +40,15 @@ if (-not (Test-Path ".env")) {
 } else {
     $envText = Get-Content ".env" -Raw
     $envText = $envText -replace "(?m)^POLYBOT_MAKER_HEDGE_TIMEOUT_SECONDS=90$", "POLYBOT_MAKER_HEDGE_TIMEOUT_SECONDS=15"
+    $envText = $envText -replace "(?m)^POLYBOT_MAKER_MIN_HOURS_TO_END=(48|24)$", "POLYBOT_MAKER_MIN_HOURS_TO_END=6"
     $safeAdditions = @(
         "POLYBOT_MAKER_COMPOUND=true",
         "POLYBOT_MAKER_ORDER_EQUITY_PCT=0.02",
         "POLYBOT_MAKER_MAX_CAPITAL_PCT=0.20",
         "POLYBOT_MAKER_MAX_DIRECTIONAL_EXPOSURE_PCT=0.02",
         "POLYBOT_MAKER_FORCE_FLATTEN_SECONDS=60",
-        "POLYBOT_MAKER_MAX_BOOK_AGE_SECONDS=30"
+        "POLYBOT_MAKER_MAX_BOOK_AGE_SECONDS=30",
+        "POLYBOT_MAKER_MAX_HOURS_TO_END=720"
     )
     foreach ($setting in $safeAdditions) {
         $name = $setting.Split("=")[0]

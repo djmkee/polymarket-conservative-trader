@@ -99,6 +99,8 @@
             <div id="sizingMode" class="mode">—</div></div>
           <div class="wallet-row"><div><strong>Maker capital</strong><div class="mini">Maximum portfolio allocation</div></div>
             <div id="capitalLimit">—</div></div>
+          <div class="wallet-row"><div><strong>Market horizon</strong><div class="mini">New quotes only; matched pairs merge immediately</div></div>
+            <div id="marketHorizon">—</div></div>
           <div class="wallet-row"><div><strong>One-leg protection</strong><div class="mini">Hedge attempt / mandatory paper exit</div></div>
             <div id="hedgeTiming">—</div></div>
           <div class="wallet-row"><div><strong>Completed-pair P&amp;L</strong><div class="mini">Profit from merged YES + NO fills</div></div>
@@ -130,6 +132,7 @@
         realtime_session:`Tracking ${p.tracked_markets||0} markets`,
         realtime_cycle:`Quote cycle: ${p.maker_quotes||0} open candidates`,
         paper_pair_merged:`Merged ${p.shares||0} paired shares`,
+        paper_balanced_redeemed:`Released ${p.shares||0} balanced shares back to cash`,
         paper_profit_exit:`Took a profitable early exit`,
         paper_hedge_escalated:`Escalated an unmatched hedge`,
         paper_hedge_flattened:p.forced?`Force-closed an unmatched position`:`Flattened an unmatched position`,
@@ -156,6 +159,7 @@
         ? `${num(Number(s.order_equity_pct)*100,2)}% (min ${num(s.minimum_shares,2)} shares)`
         : `${num(s.minimum_shares,2)} fixed shares`;
       $('capitalLimit').textContent=`${num(Number(s.max_capital_pct)*100,2)}% of equity`;
+      $('marketHorizon').textContent=`${num(s.min_hours_to_end,0)}h–${num(Number(s.max_hours_to_end)/24,0)}d`;
       $('hedgeTiming').textContent=`${s.hedge_seconds||'—'}s / ${s.force_flatten_seconds||'—'}s`;
       const perf=state.performance||{};
       $('pairedPnl').textContent=money(perf.paired_pnl);

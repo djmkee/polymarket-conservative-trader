@@ -61,6 +61,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "max_book_age_seconds": (
                         self.server.settings.maker_max_book_age_seconds
                     ),
+                    "min_hours_to_end": (
+                        self.server.settings.maker_min_hours_to_end
+                    ),
+                    "max_hours_to_end": (
+                        self.server.settings.maker_max_hours_to_end
+                    ),
                 }
             finally:
                 store.close()

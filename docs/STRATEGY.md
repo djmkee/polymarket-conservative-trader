@@ -10,7 +10,8 @@ executable combined cost, including fees and slippage, is below the guaranteed
 $1 redemption value. Both legs must be fillable; otherwise neither is placed.
 
 **Pair-safe paper market making:** Select up to three liquid, non-extreme,
-long-dated markets with sufficient two-sided spread. Paired BUY-YES and BUY-NO
+markets ending in 6 hours–30 days with sufficient two-sided spread. Paired
+BUY-YES and BUY-NO
 quotes must preserve the configured combined-cost edge. Depth-weighted
 microprice provides the internal fair value, inventory imbalance skews the
 reservation price toward neutral, and abrupt midpoint moves suspend new quotes.
@@ -32,6 +33,11 @@ forcibly flattened after 60 seconds rather than silently becoming a prediction
 bet. Filled YES/NO directional pairs are merged at their guaranteed $1
 complete-set value.
 
+The engine does not seed complete sets. Any balanced non-directional inventory
+left by an older paper release is automatically merged back to paper cash on
+the next cycle. This prevents the dashboard from showing outcome-neutral money
+as locked until a distant resolution date.
+
 **Real-time paper feed:** The recommended Windows runner subscribes to public
 market WebSockets, journals top-of-book changes, refreshes paper quotes every
 five seconds and periodically rebuilds the tracked universe. New quotes and
@@ -45,7 +51,7 @@ does not manufacture fills or trade through a negative expected edge.
 fills receives a persistent cost basis. The engine first posts a maker SELL
 above cost. It may instead sell at the executable bid when the proceeds remain
 profitable after the maximum configured taker-fee curve, slippage and the
-minimum per-share profit. Balanced seed inventory is excluded from this rule.
+minimum per-share profit.
 
 **Manual paper exit:** The local dashboard can close all shares in a
 directional paper position at the most recently recorded executable bid. The

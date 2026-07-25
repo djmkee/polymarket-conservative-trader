@@ -23,7 +23,7 @@ def book(
         yes_bid=Decimal(yes_bid),
         no_bid=Decimal(no_bid),
         liquidity=Decimal(100_000),
-        end_time=datetime.now(UTC) + timedelta(days=30),
+        end_time=datetime.now(UTC) + timedelta(days=7),
         yes_ask_size=Decimal(100),
         no_ask_size=Decimal(100),
         yes_bid_size=Decimal(100),
@@ -33,15 +33,17 @@ def book(
     )
 
 
-def test_maker_seeds_quotes_and_marks_complete_set(tmp_path):
+def test_maker_quotes_without_locking_cash_in_seed_inventory(tmp_path):
     store = AuditStore(tmp_path / "paper.sqlite3")
     maker = PaperMarketMaker(Settings(maker_max_markets=1), store)
     result = maker.run([book()])
 
-    assert result["maker_seeded"] == 1
+    assert result["maker_seeded"] == 0
+    assert result["maker_balanced_redeemed"] == 0
     assert result["maker_quotes"] == 2
     assert result["paper_equity"] == "300.0000"
-    assert store.paper_summary()["cash"] == "294"
+    assert store.paper_summary()["cash"] == "300"
+    assert store.inventory() == []
     store.close()
 
 
@@ -57,7 +59,7 @@ def test_maker_only_fills_after_book_moves_through_quote(tmp_path):
     store.close()
 
 
-def test_maker_does_not_seed_replacement_beyond_market_cap(tmp_path):
+def test_maker_does_not_seed_replacement_inventory(tmp_path):
     store = AuditStore(tmp_path / "paper.sqlite3")
     maker = PaperMarketMaker(Settings(maker_max_markets=1), store)
     maker.run([book()])
@@ -73,7 +75,7 @@ def test_maker_does_not_seed_replacement_beyond_market_cap(tmp_path):
     result = maker.run([replacement])
 
     assert result["maker_seeded"] == 0
-    assert store.paper_summary()["cash"] == "294"
+    assert store.paper_summary()["cash"] == "300"
     store.close()
 
 
@@ -117,7 +119,7 @@ def test_maker_order_size_compounds_from_current_equity(tmp_path):
 
     buys = [quote for quote in store.open_quotes() if quote["side"] == "BUY"]
     assert {Decimal(quote["size"]) for quote in buys} == {Decimal(12)}
-    assert store.paper_summary()["cash"] == "588"
+    assert store.paper_summary()["cash"] == "600"
     store.close()
 
 
@@ -167,6 +169,62 @@ def test_maker_cap_includes_inventory_and_open_buy_commitments(tmp_path):
         Decimal(0),
     )
     assert balanced + committed <= Decimal(300) * Decimal(".03")
+    store.close()
+
+
+def test_legacy_balanced_inventory_is_redeemed_without_waiting_for_resolution(
+    tmp_path,
+):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(Settings(maker_max_markets=1), store)
+    store.adjust_inventory("yes", "condition", "Test market?", "YES", "5")
+    store.adjust_inventory("no", "condition", "Test market?", "NO", "5")
+    store.set_paper_account("295", "300")
+
+    result = maker.run([book()])
+
+    assert result["maker_balanced_redeemed"] == 1
+    assert store.paper_summary()["cash"] == "300"
+    assert store.inventory() == []
+    event = store.db.execute(
+        "SELECT payload FROM events WHERE kind = 'paper_balanced_redeemed'"
+    ).fetchone()
+    assert '"shares": "5"' in event[0]
+    store.close()
+
+
+def test_legacy_release_preserves_directional_shares_and_cost_basis(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(Settings(maker_max_markets=1), store)
+    store.adjust_inventory("yes", "condition", "Test market?", "YES", "10")
+    store.adjust_inventory("no", "condition", "Test market?", "NO", "5")
+    store.add_directional_buy("yes", "5", "2")
+    store.set_paper_account("293", "300")
+
+    result = maker.run([book()])
+
+    assert result["maker_balanced_redeemed"] == 1
+    assert store.paper_summary()["cash"] == "298"
+    assert store.directional()["yes"]["shares"] == "5"
+    inventory = {item["token_id"]: item["shares"] for item in store.inventory()}
+    assert inventory == {"yes": "5"}
+    store.close()
+
+
+def test_new_market_must_end_inside_configured_window(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(Settings(maker_max_markets=1), store)
+    too_long = Market(
+        **{
+            **book().__dict__,
+            "end_time": datetime.now(UTC) + timedelta(days=365),
+        }
+    )
+
+    result = maker.run([too_long])
+
+    assert result["maker_markets"] == 0
+    assert result["maker_quotes"] == 0
     store.close()
 
 
