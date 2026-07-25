@@ -21,6 +21,9 @@ class Market:
     no_bid: Decimal
     liquidity: Decimal
     end_time: datetime | None
+    yes_ask_size: Decimal = Decimal(0)
+    no_ask_size: Decimal = Decimal(0)
+    min_order_size: Decimal = Decimal(0)
     active: bool = True
 
 
