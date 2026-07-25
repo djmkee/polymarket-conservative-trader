@@ -85,3 +85,71 @@ class GammaClient:
                 )
             )
         return result
+
+
+class ClobClient:
+    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
+        self.client = httpx.AsyncClient(
+            base_url=settings.clob_url, timeout=20, transport=transport
+        )
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+    async def executable_books(self, markets: list[Market]) -> list[Market]:
+        if not markets:
+            return []
+        requested = [
+            {"token_id": token}
+            for market in markets
+            for token in (market.yes_token, market.no_token)
+        ]
+        response = await self.client.post("/books", json=requested)
+        response.raise_for_status()
+        books = {str(book.get("asset_id")): book for book in response.json()}
+        hydrated: list[Market] = []
+        for market in markets:
+            yes = books.get(market.yes_token)
+            no = books.get(market.no_token)
+            if not yes or not no:
+                continue
+            yes_bids, yes_asks = self._levels(yes)
+            no_bids, no_asks = self._levels(no)
+            if not yes_bids or not yes_asks or not no_bids or not no_asks:
+                continue
+            yes_ask = min(yes_asks, key=lambda level: level[0])
+            no_ask = min(no_asks, key=lambda level: level[0])
+            yes_bid = max(yes_bids, key=lambda level: level[0])
+            no_bid = max(no_bids, key=lambda level: level[0])
+            hydrated.append(
+                Market(
+                    condition_id=market.condition_id,
+                    question=market.question,
+                    yes_token=market.yes_token,
+                    no_token=market.no_token,
+                    yes_ask=yes_ask[0],
+                    no_ask=no_ask[0],
+                    yes_bid=yes_bid[0],
+                    no_bid=no_bid[0],
+                    liquidity=market.liquidity,
+                    end_time=market.end_time,
+                    yes_ask_size=yes_ask[1],
+                    no_ask_size=no_ask[1],
+                    min_order_size=max(
+                        _decimal(yes.get("min_order_size")),
+                        _decimal(no.get("min_order_size")),
+                    ),
+                )
+            )
+        return hydrated
+
+    @staticmethod
+    def _levels(book: dict[str, Any]) -> tuple[list[tuple[Decimal, Decimal]], list[tuple[Decimal, Decimal]]]:
+        def parse(raw: Any) -> list[tuple[Decimal, Decimal]]:
+            return [
+                (_decimal(level.get("price")), _decimal(level.get("size")))
+                for level in raw or []
+                if _decimal(level.get("price")) > 0 and _decimal(level.get("size")) > 0
+            ]
+
+        return parse(book.get("bids")), parse(book.get("asks"))
