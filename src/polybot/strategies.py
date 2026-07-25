@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from .models import Market, Side, Signal
+from .models import Market, MarketGroup, Side, Signal
 
 
 class CompleteSetArbitrage:
@@ -62,4 +62,37 @@ class NearResolutionCandidate:
                 max_loss_per_share=winner[1],
                 rationale="Manual evidence review required; market price is not independent evidence.",
             )
+        ]
+
+
+class NegativeRiskArbitrage:
+    """Buy every YES outcome in a complete mutually-exclusive event."""
+
+    name = "negative_risk_complete_set"
+
+    @staticmethod
+    def basket_edge(group: MarketGroup, cost_per_leg: Decimal) -> Decimal:
+        total = sum((market.yes_ask for market in group.markets), Decimal(0))
+        total += cost_per_leg * len(group.markets)
+        return Decimal(1) - total
+
+    def evaluate(self, group: MarketGroup, cost_per_leg: Decimal) -> list[Signal]:
+        total = sum((market.yes_ask for market in group.markets), Decimal(0))
+        total += cost_per_leg * len(group.markets)
+        edge = self.basket_edge(group, cost_per_leg)
+        if edge <= 0:
+            return []
+        return [
+            Signal(
+                strategy=self.name,
+                condition_id=market.condition_id,
+                token_id=market.yes_token,
+                side=Side.BUY,
+                price=market.yes_ask,
+                edge=edge,
+                confidence=Decimal("0.95"),
+                max_loss_per_share=total,
+                rationale=f"Complete {len(group.markets)}-outcome basket costs {total:.4f}.",
+            )
+            for market in group.markets
         ]
