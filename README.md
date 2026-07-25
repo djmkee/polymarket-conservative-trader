@@ -7,17 +7,19 @@ when the expected edge is too small.
 > This software cannot guarantee profit. Prediction-market positions can lose
 > their full value. Live trading is deliberately locked by default.
 
-## What v0.1 does
+## What the current paper release does
 
 - Fetches active markets from the public Gamma API.
 - Normalizes binary YES/NO markets and filters weak liquidity.
 - Batch-fetches actual CLOB books and requires two-sided executable liquidity.
 - Detects complete-set arbitrage after configurable costs.
+- Checks complete 3–20 outcome negative-risk events for basket arbitrage.
 - Detects conservative near-resolution convergence candidates.
 - Sizes positions as a percentage of current equity.
 - Applies per-trade, portfolio, daily-loss, drawdown and correlation limits.
 - Applies a conservative slippage buffer and records paper order candidates.
 - Persists scanner decisions and candidates to SQLite for auditability.
+- Reports the closest observed basket edge, including rejected negative edges.
 - Requires multiple explicit gates before live execution can be added/enabled.
 
 ## Quick start
