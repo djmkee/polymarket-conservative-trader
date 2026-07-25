@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     max_drawdown_pct: Decimal = Decimal("0.08")
     min_liquidity: Decimal = Decimal(10000)
     discovery_limit: int = 500
+    neg_risk_event_limit: int = 50
+    neg_risk_max_outcomes: int = 20
     min_net_edge: Decimal = Decimal("0.0075")
     slippage_bps: Decimal = Decimal(20)
     db_path: Path = Path("polybot.sqlite3")
@@ -43,4 +45,8 @@ class Settings(BaseSettings):
             raise ValueError("Risk percentages must be in (0, 1].")
         if not 1 <= self.discovery_limit <= 5000:
             raise ValueError("discovery_limit must be between 1 and 5000.")
+        if not 1 <= self.neg_risk_event_limit <= 200:
+            raise ValueError("neg_risk_event_limit must be between 1 and 200.")
+        if not 3 <= self.neg_risk_max_outcomes <= 50:
+            raise ValueError("neg_risk_max_outcomes must be between 3 and 50.")
         return self
