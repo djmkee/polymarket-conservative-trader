@@ -11,6 +11,7 @@ when the expected edge is too small.
 
 - Fetches active markets from the public Gamma API.
 - Normalizes binary YES/NO markets and filters weak liquidity.
+- Batch-fetches actual CLOB books and requires two-sided executable liquidity.
 - Detects complete-set arbitrage after configurable costs.
 - Detects conservative near-resolution convergence candidates.
 - Sizes positions as a percentage of current equity.
