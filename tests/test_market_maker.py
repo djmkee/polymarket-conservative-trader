@@ -37,7 +37,7 @@ def test_maker_seeds_quotes_and_marks_complete_set(tmp_path):
     result = maker.run([book()])
 
     assert result["maker_seeded"] == 1
-    assert result["maker_quotes"] == 4
+    assert result["maker_quotes"] == 2
     assert result["paper_equity"] == "300.0000"
     assert store.paper_summary()["cash"] == "295"
     store.close()
@@ -48,10 +48,10 @@ def test_maker_only_fills_after_book_moves_through_quote(tmp_path):
     maker = PaperMarketMaker(Settings(maker_max_markets=1), store)
     maker.run([book()])
 
-    result = maker.run([book(yes_bid=".38", yes_ask=".40", no_bid=".61", no_ask=".63")])
+    result = maker.run([book(yes_bid=".36", yes_ask=".40", no_bid=".61", no_ask=".63")])
 
-    assert result["maker_fills"] == 2
-    assert store.paper_summary()["fills"] == 2
+    assert result["maker_fills"] == 1
+    assert store.paper_summary()["fills"] == 1
     store.close()
 
 
@@ -72,4 +72,20 @@ def test_maker_does_not_seed_replacement_beyond_market_cap(tmp_path):
 
     assert result["maker_seeded"] == 0
     assert store.paper_summary()["cash"] == "295"
+    store.close()
+
+
+def test_directional_position_exits_early_only_after_net_profit(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(Settings(maker_max_markets=1), store)
+    maker.run([book()])
+    maker.run([book(yes_bid=".38", yes_ask=".40", no_bid=".61", no_ask=".63")])
+
+    result = maker.run([book(yes_bid=".46", yes_ask=".50", no_bid=".50", no_ask=".54")])
+
+    assert result["maker_profit_exits"] == 1
+    summary = store.paper_summary()
+    assert summary["fills"] == 2
+    assert Decimal(summary["realized_pnl"]) > 0
+    assert Decimal(summary["fees"]) > 0
     store.close()
