@@ -382,14 +382,14 @@ class AuditStore:
         )
         self.db.commit()
 
-    def midpoint_jump(self, condition_id: str, since_iso: str) -> str:
+    def midpoint_jump(self, token_id: str, since_iso: str) -> str:
         from decimal import Decimal
 
         rows = self.db.execute(
             """SELECT midpoint FROM market_ticks
-               WHERE condition_id = ? AND created_at >= ?
+               WHERE token_id = ? AND created_at >= ?
                ORDER BY id""",
-            (condition_id, since_iso),
+            (token_id, since_iso),
         ).fetchall()
         if len(rows) < 2:
             return "0"

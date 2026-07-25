@@ -48,3 +48,25 @@ def test_book_cache_applies_snapshot_and_price_change():
     assert updated.yes_ask == Decimal(".44")
     assert updated.yes_bid_size == Decimal(50)
     assert updated.yes_updated_at >= snapshot_time
+
+
+def test_healthy_stream_keeps_unchanged_books_fresh():
+    stale = datetime.now(UTC) - timedelta(minutes=2)
+    cache = LiveBookCache(
+        [
+            Market(
+                **{
+                    **market().__dict__,
+                    "yes_updated_at": stale,
+                    "no_updated_at": stale,
+                }
+            )
+        ]
+    )
+    observed_at = datetime.now(UTC)
+
+    cache.mark_stream_alive(observed_at)
+
+    refreshed = cache.markets()[0]
+    assert refreshed.yes_updated_at == observed_at
+    assert refreshed.no_updated_at == observed_at

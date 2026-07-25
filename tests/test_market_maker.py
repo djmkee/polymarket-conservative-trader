@@ -317,6 +317,26 @@ def test_abrupt_midpoint_jump_pauses_new_market(tmp_path):
     store.close()
 
 
+def test_complementary_yes_no_prices_are_not_misread_as_a_price_jump(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(
+        Settings(maker_max_markets=1, maker_max_midpoint_jump=Decimal(".03")),
+        store,
+    )
+    asymmetric = book(
+        yes_bid=".20",
+        yes_ask=".24",
+        no_bid=".76",
+        no_ask=".80",
+    )
+
+    result = maker.run([asymmetric])
+
+    assert result["maker_markets"] == 1
+    assert result["maker_quotes"] == 2
+    store.close()
+
+
 def test_stale_two_sided_book_places_no_new_quotes(tmp_path):
     stale = datetime.now(UTC) - timedelta(minutes=2)
     stale_book = Market(

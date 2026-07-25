@@ -36,6 +36,23 @@ class LiveBookCache:
     def markets(self) -> list[Market]:
         return list(self._markets.values())
 
+    def mark_stream_alive(self, observed_at: datetime | None = None) -> None:
+        """Keep unchanged books fresh while their subscribed stream is healthy.
+
+        A quiet book does not emit price events. Any message received on the
+        active market subscription proves that the ordered stream is alive, so
+        the cached top of book remains current even when its price is unchanged.
+        """
+        observed_at = observed_at or datetime.now(UTC)
+        self._markets = {
+            condition_id: replace(
+                market,
+                yes_updated_at=observed_at,
+                no_updated_at=observed_at,
+            )
+            for condition_id, market in self._markets.items()
+        }
+
     def apply(self, message: str | dict[str, Any] | list[Any]) -> list[dict[str, str]]:
         if isinstance(message, str):
             if message in {"PING", "PONG", "ping", "pong"}:

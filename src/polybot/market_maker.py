@@ -753,20 +753,25 @@ class PaperMarketMaker:
 
     def _record_snapshots(self, markets: list[Market]) -> None:
         for market in markets:
-            self.store.record_tick(
-                market.condition_id,
-                market.yes_token,
-                str(market.yes_bid),
-                str(market.yes_ask),
-                "snapshot",
-            )
+            for token_id, bid, ask in (
+                (market.yes_token, market.yes_bid, market.yes_ask),
+                (market.no_token, market.no_bid, market.no_ask),
+            ):
+                self.store.record_tick(
+                    market.condition_id,
+                    token_id,
+                    str(bid),
+                    str(ask),
+                    "snapshot",
+                )
 
     def _is_toxic(self, market: Market) -> bool:
         since = datetime.now(UTC) - timedelta(
             seconds=self.s.maker_toxicity_window_seconds
         )
-        jump = Decimal(
-            self.store.midpoint_jump(market.condition_id, since.isoformat())
+        jump = max(
+            Decimal(self.store.midpoint_jump(token_id, since.isoformat()))
+            for token_id in (market.yes_token, market.no_token)
         )
         return jump >= self.s.maker_max_midpoint_jump
 

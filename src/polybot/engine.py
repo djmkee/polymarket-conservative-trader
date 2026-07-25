@@ -230,6 +230,12 @@ class Engine:
                                             str(ask),
                                             "rest_fallback",
                                         )
+                        else:
+                            # Unchanged books emit no price event. A received
+                            # message (including PONG) confirms the ordered
+                            # subscription is alive, so do not expire quiet
+                            # cached books solely because their price held still.
+                            cache.mark_stream_alive()
                         changed = cache.apply(message)
                         for update in changed:
                             self.store.record_tick(

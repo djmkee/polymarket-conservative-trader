@@ -130,7 +130,7 @@
     function eventText(item){
       const p=item.payload||{}; const map={
         realtime_session:`Tracking ${p.tracked_markets||0} markets`,
-        realtime_cycle:`Quote cycle: ${p.maker_quotes||0} open candidates`,
+        realtime_cycle:`Quote cycle: ${p.maker_quotes||0} quotes across ${p.maker_markets||0} eligible markets`,
         paper_pair_merged:`Merged ${p.shares||0} paired shares`,
         paper_balanced_redeemed:`Released ${p.shares||0} balanced shares back to cash`,
         paper_profit_exit:`Took a profitable early exit`,
