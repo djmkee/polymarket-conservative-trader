@@ -14,6 +14,9 @@ when the expected edge is too small.
 - Batch-fetches actual CLOB books and requires two-sided executable liquidity.
 - Detects complete-set arbitrage after configurable costs.
 - Checks complete 3–20 outcome negative-risk events for basket arbitrage.
+- Runs a persistent post-only market-making simulator across up to three markets.
+- Seeds balanced YES/NO complete sets and tracks cash, inventory, quotes and fills.
+- Counts a paper fill only after a later executable book moves through the quote.
 - Detects conservative near-resolution convergence candidates.
 - Sizes positions as a percentage of current equity.
 - Applies per-trade, portfolio, daily-loss, drawdown and correlation limits.
@@ -63,3 +66,6 @@ See [docs/OPERATOR.md](docs/OPERATOR.md) and [docs/STRATEGY.md](docs/STRATEGY.md
 Windows users should follow [docs/WINDOWS.md](docs/WINDOWS.md). The included
 PowerShell scripts create the virtual environment, validate the installation,
 run paper cycles and optionally install a five-minute Windows Scheduled Task.
+
+The market-making simulator is deliberately pessimistic. Touching a quote is
+not treated as a fill because another maker may be ahead in the queue.
