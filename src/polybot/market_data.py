@@ -192,6 +192,10 @@ class ClobClient:
                         _decimal(yes.get("min_order_size")),
                         _decimal(no.get("min_order_size")),
                     ),
+                    tick_size=max(
+                        _decimal(yes.get("tick_size"), "0.01"),
+                        _decimal(no.get("tick_size"), "0.01"),
+                    ),
                 )
             )
         return hydrated
