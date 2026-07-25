@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     discovery_limit: int = 500
     neg_risk_event_limit: int = 50
     neg_risk_max_outcomes: int = 20
+    maker_enabled: bool = True
+    maker_max_markets: int = 3
+    maker_order_shares: Decimal = Decimal(5)
+    maker_min_spread: Decimal = Decimal("0.02")
+    maker_min_price: Decimal = Decimal("0.15")
+    maker_max_price: Decimal = Decimal("0.85")
+    maker_min_hours_to_end: int = 48
+    maker_max_capital: Decimal = Decimal(60)
     min_net_edge: Decimal = Decimal("0.0075")
     slippage_bps: Decimal = Decimal(20)
     db_path: Path = Path("polybot.sqlite3")
@@ -49,4 +57,10 @@ class Settings(BaseSettings):
             raise ValueError("neg_risk_event_limit must be between 1 and 200.")
         if not 3 <= self.neg_risk_max_outcomes <= 50:
             raise ValueError("neg_risk_max_outcomes must be between 3 and 50.")
+        if not 1 <= self.maker_max_markets <= 10:
+            raise ValueError("maker_max_markets must be between 1 and 10.")
+        if self.maker_order_shares <= 0 or self.maker_max_capital <= 0:
+            raise ValueError("Maker size and capital limits must be positive.")
+        if not 0 < self.maker_min_price < self.maker_max_price < 1:
+            raise ValueError("Invalid maker price range.")
         return self
