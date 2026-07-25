@@ -34,6 +34,19 @@ def _time(value: Any) -> datetime | None:
         return None
 
 
+def _reward_value(raw: dict[str, Any], *keys: str) -> Decimal:
+    """Read reward settings across the Gamma API's historical field names."""
+    for key in keys:
+        if raw.get(key) is not None:
+            return _decimal(raw[key])
+    rewards = raw.get("rewards")
+    if isinstance(rewards, dict):
+        for key in keys:
+            if rewards.get(key) is not None:
+                return _decimal(rewards[key])
+    return Decimal(0)
+
+
 class GammaClient:
     def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
         self.settings = settings
@@ -135,6 +148,15 @@ class GammaClient:
             no_bid=max(Decimal("0.001"), no - spread / 2),
             liquidity=liquidity,
             end_time=_time(raw.get("endDate")),
+            reward_min_size=_reward_value(
+                raw, "rewardsMinSize", "min_size", "minSize"
+            ),
+            reward_max_spread=_reward_value(
+                raw, "rewardsMaxSpread", "max_spread", "maxSpread"
+            ),
+            reward_daily_rate=_reward_value(
+                raw, "rewardsDailyRate", "daily_rate", "dailyRate"
+            ),
         )
 
 
@@ -188,6 +210,8 @@ class ClobClient:
                     end_time=market.end_time,
                     yes_ask_size=yes_ask[1],
                     no_ask_size=no_ask[1],
+                    yes_bid_size=yes_bid[1],
+                    no_bid_size=no_bid[1],
                     min_order_size=max(
                         _decimal(yes.get("min_order_size")),
                         _decimal(no.get("min_order_size")),
@@ -196,6 +220,9 @@ class ClobClient:
                         _decimal(yes.get("tick_size"), "0.01"),
                         _decimal(no.get("tick_size"), "0.01"),
                     ),
+                    reward_min_size=market.reward_min_size,
+                    reward_max_spread=market.reward_max_spread,
+                    reward_daily_rate=market.reward_daily_rate,
                 )
             )
         return hydrated

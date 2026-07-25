@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     maker_take_profit_per_share: Decimal = Decimal("0.005")
     maker_max_fee_rate: Decimal = Decimal("0.07")
     maker_max_directional_shares: Decimal = Decimal(5)
+    maker_pair_min_edge: Decimal = Decimal("0.01")
+    maker_inventory_skew_per_share: Decimal = Decimal("0.002")
+    maker_hedge_timeout_seconds: int = 90
+    maker_max_flatten_loss_per_share: Decimal = Decimal("0.015")
+    maker_toxicity_window_seconds: int = 300
+    maker_max_midpoint_jump: Decimal = Decimal("0.035")
+    maker_reward_weight: Decimal = Decimal("0.25")
+    realtime_quote_interval_seconds: int = 5
+    realtime_refresh_seconds: int = 900
+    realtime_max_markets: int = 20
+    realtime_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     min_net_edge: Decimal = Decimal("0.0075")
     slippage_bps: Decimal = Decimal(20)
     db_path: Path = Path("polybot.sqlite3")
@@ -66,6 +77,24 @@ class Settings(BaseSettings):
             raise ValueError("Maker size and capital limits must be positive.")
         if self.maker_take_profit_per_share <= 0 or self.maker_max_fee_rate < 0:
             raise ValueError("Maker profit and fee settings must be non-negative.")
+        if not 0 < self.maker_pair_min_edge < 1:
+            raise ValueError("maker_pair_min_edge must be between 0 and 1.")
+        if self.maker_inventory_skew_per_share < 0:
+            raise ValueError("maker_inventory_skew_per_share cannot be negative.")
+        if self.maker_hedge_timeout_seconds < 10:
+            raise ValueError("maker_hedge_timeout_seconds must be at least 10.")
+        if self.maker_max_flatten_loss_per_share < 0:
+            raise ValueError("maker_max_flatten_loss_per_share cannot be negative.")
+        if self.maker_toxicity_window_seconds < 30:
+            raise ValueError("maker_toxicity_window_seconds must be at least 30.")
+        if not 0 < self.maker_max_midpoint_jump < 1:
+            raise ValueError("maker_max_midpoint_jump must be between 0 and 1.")
+        if self.realtime_quote_interval_seconds < 1:
+            raise ValueError("realtime_quote_interval_seconds must be positive.")
+        if self.realtime_refresh_seconds < 60:
+            raise ValueError("realtime_refresh_seconds must be at least 60.")
+        if not 1 <= self.realtime_max_markets <= 200:
+            raise ValueError("realtime_max_markets must be between 1 and 200.")
         if not 0 < self.maker_min_price < self.maker_max_price < 1:
             raise ValueError("Invalid maker price range.")
         return self

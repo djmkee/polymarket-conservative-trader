@@ -7,7 +7,7 @@ from .store import AuditStore
 
 
 class PaperMarketMaker:
-    """Conservative cross-snapshot simulator for post-only maker quotes."""
+    """Pair-safe, inventory-aware simulator for post-only maker quotes."""
 
     def __init__(self, settings: Settings, store: AuditStore):
         self.s = settings
@@ -15,9 +15,13 @@ class PaperMarketMaker:
         self.store.init_paper_account(str(settings.initial_equity))
 
     def run(self, markets: list[Market]) -> dict[str, int | str | bool]:
+        self._record_snapshots(markets)
         token_books = self._token_books(markets)
         fills = self._settle_quotes(token_books)
+        merged = self._merge_directional_pairs(markets)
         profit_exits = self._take_profitable_exits(token_books)
+        hedge_exits = self._resolve_expired_hedges(markets, token_books)
+        merged += self._merge_directional_pairs(markets)
         selected = self._select_markets(markets)
         seeded = self._seed_complete_sets(selected)
         equity = self._equity(token_books)
@@ -32,11 +36,20 @@ class PaperMarketMaker:
             "maker_markets": len(selected),
             "maker_seeded": seeded,
             "maker_fills": fills,
+            "maker_pairs_merged": merged,
             "maker_profit_exits": profit_exits,
+            "maker_hedge_exits": hedge_exits,
             "maker_quotes": quotes,
+            "maker_reward_markets": sum(
+                1 for market in selected if self._reward_eligible(market)
+            ),
             "paper_equity": f"{equity:.4f}",
             "maker_halted": halted,
         }
+
+    def selected_markets(self, markets: list[Market]) -> list[Market]:
+        """Expose deterministic selection for the real-time subscription set."""
+        return self._select_markets(markets)
 
     def _select_markets(self, markets: list[Market]) -> list[Market]:
         now = datetime.now(UTC)
@@ -44,7 +57,7 @@ class PaperMarketMaker:
         existing_markets = [market for market in markets if market.condition_id in existing]
         existing_markets.sort(key=lambda market: market.liquidity, reverse=True)
         available_new_slots = max(0, self.s.maker_max_markets - len(existing))
-        eligible = []
+        eligible: list[tuple[Market, Decimal]] = []
         for market in markets:
             if market.condition_id in existing:
                 continue
@@ -59,7 +72,9 @@ class PaperMarketMaker:
             no_spread = market.no_ask - market.no_bid
             if min(yes_spread, no_spread) < self.s.maker_min_spread:
                 continue
-            eligible.append((market, min(yes_spread, no_spread)))
+            if self._is_toxic(market):
+                continue
+            eligible.append((market, self._selection_score(market)))
         eligible.sort(key=lambda item: (item[1], item[0].liquidity), reverse=True)
         new_markets = [item[0] for item in eligible[:available_new_slots]]
         return existing_markets[: self.s.maker_max_markets] + new_markets
@@ -148,6 +163,56 @@ class PaperMarketMaker:
         self.store.set_paper_account(str(cash), account["peak_equity"])
         return fills
 
+    def _merge_directional_pairs(self, markets: list[Market]) -> int:
+        account = self.store.paper_account()
+        cash = Decimal(account["cash"])
+        directional = self.store.directional()
+        merged = 0
+        for market in markets:
+            yes = directional.get(market.yes_token)
+            no = directional.get(market.no_token)
+            if not yes or not no:
+                continue
+            shares = min(Decimal(yes["shares"]), Decimal(no["shares"]))
+            if shares <= 0:
+                continue
+            yes_cost = Decimal(
+                self.store.consume_directional(market.yes_token, str(shares))
+            )
+            no_cost = Decimal(
+                self.store.consume_directional(market.no_token, str(shares))
+            )
+            self.store.adjust_inventory(
+                market.yes_token,
+                market.condition_id,
+                market.question,
+                "YES",
+                str(-shares),
+            )
+            self.store.adjust_inventory(
+                market.no_token,
+                market.condition_id,
+                market.question,
+                "NO",
+                str(-shares),
+            )
+            cash += shares
+            profit = shares - yes_cost - no_cost
+            self.store.add_paper_metrics(str(profit), "0")
+            self.store.record(
+                "paper_pair_merged",
+                {
+                    "condition_id": market.condition_id,
+                    "shares": shares,
+                    "combined_cost": yes_cost + no_cost,
+                    "payout": shares,
+                    "realized_profit": profit,
+                },
+            )
+            merged += 1
+        self.store.set_paper_account(str(cash), account["peak_equity"])
+        return merged
+
     def _take_profitable_exits(
         self, books: dict[str, dict[str, Decimal | str]]
     ) -> int:
@@ -209,6 +274,171 @@ class PaperMarketMaker:
         self.store.set_paper_account(str(cash), account["peak_equity"])
         return exits
 
+    def manual_close(self, token_id: str, requested_shares: Decimal | None = None) -> dict[str, str]:
+        """Close a directional paper position at the latest recorded bid."""
+        directional = self.store.directional().get(token_id)
+        inventory = {
+            item["token_id"]: item for item in self.store.inventory()
+        }.get(token_id)
+        book = self.store.latest_book(token_id)
+        if not directional or not inventory:
+            raise ValueError("No directional paper position exists for this token.")
+        if not book:
+            raise ValueError("No current executable book is available for this token.")
+        available = Decimal(directional["shares"])
+        shares = available if requested_shares is None else requested_shares
+        if shares <= 0 or shares > available:
+            raise ValueError("Close size must be positive and cannot exceed the position.")
+        bid = Decimal(book["bid"])
+        slippage = self.s.slippage_bps / Decimal(10000)
+        fee_per_share = self.s.maker_max_fee_rate * bid * (Decimal(1) - bid)
+        net_price = bid - fee_per_share - slippage
+        proceeds = net_price * shares
+        account = self.store.paper_account()
+        sold_cost = Decimal(self.store.consume_directional(token_id, str(shares)))
+        self.store.adjust_inventory(
+            token_id,
+            inventory["condition_id"],
+            inventory["question"],
+            inventory["outcome"],
+            str(-shares),
+        )
+        self.store.set_paper_account(
+            str(Decimal(account["cash"]) + proceeds), account["peak_equity"]
+        )
+        fee = fee_per_share * shares
+        profit = proceeds - sold_cost
+        self.store.add_paper_metrics(str(profit), str(fee))
+        quote_id = self.store.add_quote(
+            token_id,
+            inventory["condition_id"],
+            inventory["outcome"],
+            "SELL",
+            str(bid),
+            str(shares),
+        )
+        self.store.add_fill(quote_id, token_id, "SELL", str(bid), str(shares))
+        result = {
+            "token_id": token_id,
+            "shares": str(shares),
+            "bid": str(bid),
+            "net_price": str(net_price),
+            "fee": str(fee),
+            "realized_profit": str(profit),
+        }
+        self.store.record("paper_manual_close", result)
+        return result
+
+    def _resolve_expired_hedges(
+        self,
+        markets: list[Market],
+        books: dict[str, dict[str, Decimal | str]],
+    ) -> int:
+        """Cap one-leg risk after the hedge timer using the cheapest safe exit."""
+        account = self.store.paper_account()
+        cash = Decimal(account["cash"])
+        now = datetime.now(UTC)
+        slippage = self.s.slippage_bps / Decimal(10000)
+        by_token = {
+            market.yes_token: (market, "YES", market.no_token, market.no_ask)
+            for market in markets
+        }
+        by_token.update(
+            {
+                market.no_token: (market, "NO", market.yes_token, market.yes_ask)
+                for market in markets
+            }
+        )
+        resolved = 0
+        for token_id, position in list(self.store.directional().items()):
+            details = by_token.get(token_id)
+            book = books.get(token_id)
+            if not details or not book:
+                continue
+            opened_at = datetime.fromisoformat(position["opened_at"])
+            if (now - opened_at).total_seconds() < self.s.maker_hedge_timeout_seconds:
+                continue
+            market, outcome, opposite_token, opposite_ask = details
+            shares = Decimal(position["shares"])
+            average_cost = Decimal(position["cost_basis"]) / shares
+            opposite_fee = (
+                self.s.maker_max_fee_rate
+                * opposite_ask
+                * (Decimal(1) - opposite_ask)
+            )
+            hedge_unit_cost = opposite_ask + opposite_fee + slippage
+            pair_profit = Decimal(1) - average_cost - hedge_unit_cost
+            hedge_notional = hedge_unit_cost * shares
+            if (
+                pair_profit >= -self.s.maker_max_flatten_loss_per_share
+                and cash >= hedge_notional
+            ):
+                self.store.adjust_inventory(
+                    opposite_token,
+                    market.condition_id,
+                    market.question,
+                    "NO" if outcome == "YES" else "YES",
+                    str(shares),
+                )
+                self.store.add_directional_buy(
+                    opposite_token, str(shares), str(hedge_notional)
+                )
+                cash -= hedge_notional
+                self.store.add_paper_metrics("0", str(opposite_fee * shares))
+                self.store.record(
+                    "paper_hedge_escalated",
+                    {
+                        "condition_id": market.condition_id,
+                        "held_outcome": outcome,
+                        "shares": shares,
+                        "opposite_ask": opposite_ask,
+                        "projected_pair_profit_per_share": pair_profit,
+                    },
+                )
+                resolved += 1
+                continue
+            bid = Decimal(str(book["bid"]))
+            fee_per_share = self.s.maker_max_fee_rate * bid * (Decimal(1) - bid)
+            net_price = bid - fee_per_share - slippage
+            loss_per_share = average_cost - net_price
+            if loss_per_share > self.s.maker_max_flatten_loss_per_share:
+                self.store.record(
+                    "paper_hedge_blocked",
+                    {
+                        "condition_id": market.condition_id,
+                        "outcome": outcome,
+                        "loss_per_share": loss_per_share,
+                        "loss_cap": self.s.maker_max_flatten_loss_per_share,
+                    },
+                )
+                continue
+            proceeds = net_price * shares
+            sold_cost = Decimal(self.store.consume_directional(token_id, str(shares)))
+            self.store.adjust_inventory(
+                token_id,
+                market.condition_id,
+                market.question,
+                outcome,
+                str(-shares),
+            )
+            cash += proceeds
+            self.store.add_paper_metrics(
+                str(proceeds - sold_cost), str(fee_per_share * shares)
+            )
+            self.store.record(
+                "paper_hedge_flattened",
+                {
+                    "condition_id": market.condition_id,
+                    "outcome": outcome,
+                    "shares": shares,
+                    "net_price": net_price,
+                    "realized_profit": proceeds - sold_cost,
+                },
+            )
+            resolved += 1
+        self.store.set_paper_account(str(cash), account["peak_equity"])
+        return resolved
+
     def _place_quotes(self, markets: list[Market]) -> int:
         directional = self.store.directional()
         account = self.store.paper_account()
@@ -216,42 +446,178 @@ class PaperMarketMaker:
         quotes = 0
         for market in markets:
             size = max(self.s.maker_order_shares, market.min_order_size)
-            for outcome, token, bid, ask in (
-                ("YES", market.yes_token, market.yes_bid, market.yes_ask),
-                ("NO", market.no_token, market.no_bid, market.no_ask),
-            ):
-                tick = market.tick_size
-                buy = min(bid + tick, ask - tick)
-                sell = max(ask - tick, bid + tick)
-                if buy < sell:
-                    position = directional.get(token)
-                    directional_shares = Decimal(position["shares"]) if position else Decimal(0)
-                    if (
-                        directional_shares + size <= self.s.maker_max_directional_shares
-                        and cash >= buy * size
-                    ):
-                        self.store.add_quote(
-                            token, market.condition_id, outcome, "BUY", str(buy), str(size)
-                        )
-                        quotes += 1
-                    if position and Decimal(position["shares"]) >= size:
-                        average_cost = Decimal(position["cost_basis"]) / Decimal(
-                            position["shares"]
-                        )
-                        sell = max(sell, average_cost + self.s.maker_take_profit_per_share)
-                        sell = (sell / tick).to_integral_value(rounding=ROUND_UP) * tick
-                        if sell >= Decimal(1):
-                            continue
-                        self.store.add_quote(
-                            token,
-                            market.condition_id,
-                            outcome,
-                            "SELL",
-                            str(sell),
-                            str(size),
-                        )
-                        quotes += 1
+            yes_buy, no_buy = self._pair_buy_prices(market, directional)
+            planned = (
+                ("YES", market.yes_token, yes_buy),
+                ("NO", market.no_token, no_buy),
+            )
+            committed = Decimal(0)
+            for outcome, token, buy in planned:
+                if buy is None:
+                    continue
+                position = directional.get(token)
+                directional_shares = (
+                    Decimal(position["shares"]) if position else Decimal(0)
+                )
+                notional = buy * size
+                if (
+                    directional_shares + size
+                    <= self.s.maker_max_directional_shares
+                    and cash - committed >= notional
+                ):
+                    self.store.add_quote(
+                        token,
+                        market.condition_id,
+                        outcome,
+                        "BUY",
+                        str(buy),
+                        str(size),
+                    )
+                    committed += notional
+                    quotes += 1
+                if not position or Decimal(position["shares"]) < size:
+                    continue
+                average_cost = Decimal(position["cost_basis"]) / Decimal(
+                    position["shares"]
+                )
+                bid = market.yes_bid if outcome == "YES" else market.no_bid
+                ask = market.yes_ask if outcome == "YES" else market.no_ask
+                sell = max(
+                    ask - market.tick_size,
+                    bid + market.tick_size,
+                    average_cost + self.s.maker_take_profit_per_share,
+                )
+                sell = (
+                    sell / market.tick_size
+                ).to_integral_value(rounding=ROUND_UP) * market.tick_size
+                if sell < Decimal(1):
+                    self.store.add_quote(
+                        token,
+                        market.condition_id,
+                        outcome,
+                        "SELL",
+                        str(sell),
+                        str(size),
+                    )
+                    quotes += 1
         return quotes
+
+    def _pair_buy_prices(
+        self,
+        market: Market,
+        directional: dict[str, dict[str, str]],
+    ) -> tuple[Decimal | None, Decimal | None]:
+        tick = market.tick_size
+        yes_position = directional.get(market.yes_token)
+        no_position = directional.get(market.no_token)
+        yes_shares = Decimal(yes_position["shares"]) if yes_position else Decimal(0)
+        no_shares = Decimal(no_position["shares"]) if no_position else Decimal(0)
+        imbalance = yes_shares - no_shares
+        fair_yes = self._fair_yes(market)
+        skew = max(
+            Decimal("-0.05"),
+            min(
+                Decimal("0.05"),
+                imbalance * self.s.maker_inventory_skew_per_share,
+            ),
+        )
+        reservation_yes = fair_yes - skew
+        reservation_no = Decimal(1) - reservation_yes
+        half_edge = self.s.maker_pair_min_edge / Decimal(2)
+        yes_buy = min(
+            market.yes_bid + tick,
+            market.yes_ask - tick,
+            reservation_yes - half_edge,
+        )
+        no_buy = min(
+            market.no_bid + tick,
+            market.no_ask - tick,
+            reservation_no - half_edge,
+        )
+        if yes_position and not no_position:
+            average = Decimal(yes_position["cost_basis"]) / yes_shares
+            no_buy = min(no_buy, Decimal(1) - average - self.s.maker_pair_min_edge)
+        elif no_position and not yes_position:
+            average = Decimal(no_position["cost_basis"]) / no_shares
+            yes_buy = min(yes_buy, Decimal(1) - average - self.s.maker_pair_min_edge)
+        cap = Decimal(1) - self.s.maker_pair_min_edge
+        excess = yes_buy + no_buy - cap
+        if excess > 0:
+            yes_buy -= excess / Decimal(2)
+            no_buy -= excess - excess / Decimal(2)
+        yes_buy = (yes_buy / tick).to_integral_value(rounding=ROUND_DOWN) * tick
+        no_buy = (no_buy / tick).to_integral_value(rounding=ROUND_DOWN) * tick
+        if yes_buy <= market.yes_bid or yes_buy >= market.yes_ask:
+            yes_buy = None
+        if no_buy <= market.no_bid or no_buy >= market.no_ask:
+            no_buy = None
+        return yes_buy, no_buy
+
+    @staticmethod
+    def _microprice(
+        bid: Decimal,
+        ask: Decimal,
+        bid_size: Decimal,
+        ask_size: Decimal,
+    ) -> Decimal:
+        total = bid_size + ask_size
+        if total <= 0:
+            return (bid + ask) / Decimal(2)
+        return (ask * bid_size + bid * ask_size) / total
+
+    def _fair_yes(self, market: Market) -> Decimal:
+        yes = self._microprice(
+            market.yes_bid,
+            market.yes_ask,
+            market.yes_bid_size,
+            market.yes_ask_size,
+        )
+        no = self._microprice(
+            market.no_bid,
+            market.no_ask,
+            market.no_bid_size,
+            market.no_ask_size,
+        )
+        total = yes + no
+        return yes / total if total > 0 else (market.yes_bid + market.yes_ask) / 2
+
+    def _selection_score(self, market: Market) -> Decimal:
+        spread = min(
+            market.yes_ask - market.yes_bid,
+            market.no_ask - market.no_bid,
+        )
+        reward = Decimal(0)
+        if self._reward_eligible(market):
+            reward = self.s.maker_reward_weight * (
+                market.reward_daily_rate / max(Decimal(1), self.s.maker_max_capital)
+                + Decimal("0.01")
+            )
+        return spread + reward
+
+    def _reward_eligible(self, market: Market) -> bool:
+        if market.reward_max_spread <= 0:
+            return False
+        size = max(self.s.maker_order_shares, market.min_order_size)
+        return market.reward_min_size <= size
+
+    def _record_snapshots(self, markets: list[Market]) -> None:
+        for market in markets:
+            self.store.record_tick(
+                market.condition_id,
+                market.yes_token,
+                str(market.yes_bid),
+                str(market.yes_ask),
+                "snapshot",
+            )
+
+    def _is_toxic(self, market: Market) -> bool:
+        since = datetime.now(UTC) - timedelta(
+            seconds=self.s.maker_toxicity_window_seconds
+        )
+        jump = Decimal(
+            self.store.midpoint_jump(market.condition_id, since.isoformat())
+        )
+        return jump >= self.s.maker_max_midpoint_jump
 
     def _equity(self, books: dict[str, dict[str, Decimal | str]]) -> Decimal:
         account = self.store.paper_account()

@@ -3,6 +3,7 @@ import asyncio
 import typer
 
 from .config import Settings
+from .dashboard import run_dashboard
 from .engine import Engine
 from .market_data import GammaClient
 from .store import AuditStore
@@ -40,6 +41,48 @@ def run(once: bool = typer.Option(True, help="Run one paper cycle.")) -> None:
     if not once:
         raise typer.BadParameter("Continuous scheduler arrives after one-cycle validation.")
     asyncio.run(execute())
+
+
+@app.command()
+def stream(
+    minutes: int = typer.Option(
+        0, min=0, help="Run real-time paper mode for N minutes; 0 runs until stopped."
+    ),
+) -> None:
+    """Run event-driven paper trading from Polymarket's public WebSocket."""
+
+    async def execute() -> None:
+        engine = Engine(Settings())
+        try:
+            result = await engine.stream(duration_seconds=minutes * 60)
+            typer.echo(result)
+        finally:
+            await engine.close()
+
+    try:
+        asyncio.run(execute())
+    except KeyboardInterrupt:
+        typer.echo("Real-time paper engine stopped.")
+
+
+@app.command()
+def dashboard(
+    port: int = typer.Option(8765, min=1024, max=65535),
+    open_browser: bool = typer.Option(True, help="Open the local dashboard in a browser."),
+) -> None:
+    """Start the real-time paper engine and local browser dashboard."""
+    url = f"http://127.0.0.1:{port}"
+    typer.echo(f"Polybot dashboard: {url}")
+    try:
+        asyncio.run(
+            run_dashboard(
+                Settings(),
+                port=port,
+                open_browser=open_browser,
+            )
+        )
+    except KeyboardInterrupt:
+        typer.echo("Dashboard and real-time paper engine stopped.")
 
 
 @app.command()

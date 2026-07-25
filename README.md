@@ -15,6 +15,11 @@ when the expected edge is too small.
 - Detects complete-set arbitrage after configurable costs.
 - Checks complete 3–20 outcome negative-risk events for basket arbitrage.
 - Runs a persistent post-only market-making simulator across up to three markets.
+- Runs an event-driven public WebSocket paper engine with automatic reconnects.
+- Quotes paired BUY-YES/BUY-NO orders whose combined target cost preserves an edge.
+- Skews prices toward neutral inventory and pauses markets after abrupt midpoint moves.
+- Escalates stale one-leg fills into a capped hedge or controlled flattening attempt.
+- Ranks reward-eligible markets alongside spread while refusing unaffordable reward sizes.
 - Seeds balanced YES/NO complete sets and tracks cash, inventory, quotes and fills.
 - Counts a paper fill only after a later executable book moves through the quote.
 - Tracks directional cost basis and exits profitable excess inventory before resolution.
@@ -24,6 +29,8 @@ when the expected edge is too small.
 - Applies per-trade, portfolio, daily-loss, drawdown and correlation limits.
 - Applies a conservative slippage buffer and records paper order candidates.
 - Persists scanner decisions and candidates to SQLite for auditability.
+- Includes a local browser dashboard for equity, P&L, positions, quotes, fills
+  and confirmed manual paper-position closes.
 - Reports the closest observed basket edge, including rejected negative edges.
 - Requires multiple explicit gates before live execution can be added/enabled.
 
@@ -67,7 +74,13 @@ See [docs/OPERATOR.md](docs/OPERATOR.md) and [docs/STRATEGY.md](docs/STRATEGY.md
 
 Windows users should follow [docs/WINDOWS.md](docs/WINDOWS.md). The included
 PowerShell scripts create the virtual environment, validate the installation,
-run paper cycles and optionally install a five-minute Windows Scheduled Task.
+run paper cycles, start the real-time paper engine and optionally install a
+five-minute Windows Scheduled Task.
 
 The market-making simulator is deliberately pessimistic. Touching a quote is
 not treated as a fill because another maker may be ahead in the queue.
+
+For the easiest and most realistic test, run `.\scripts\run-dashboard.ps1`.
+It starts both the real-time paper engine and a local dashboard at
+`http://127.0.0.1:8765`. Do not run the five-minute Scheduled Task or the
+standalone real-time runner at the same time.
