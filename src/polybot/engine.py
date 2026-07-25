@@ -184,6 +184,9 @@ class Engine:
             sessions += 1
             latest = self.maker.run(cache.markets()) if self.s.maker_enabled else {}
             quote_cycles += 1
+            zero_market_cycles = (
+                1 if latest.get("maker_markets") == 0 else 0
+            )
             self.store.record(
                 "realtime_session",
                 {
@@ -251,7 +254,24 @@ class Engine:
                             latest = self.maker.run(cache.markets())
                             quote_cycles += 1
                             self.store.record("realtime_cycle", latest)
+                            if latest.get("maker_markets") == 0:
+                                zero_market_cycles += 1
+                            else:
+                                zero_market_cycles = 0
                             next_quote = now + self.s.realtime_quote_interval_seconds
+                            if (
+                                zero_market_cycles
+                                >= self.s.realtime_zero_market_reselect_cycles
+                            ):
+                                self.store.record(
+                                    "realtime_reselect",
+                                    {
+                                        "reason": "zero_eligible_markets",
+                                        "cycles": zero_market_cycles,
+                                        **latest,
+                                    },
+                                )
+                                break
             except TimeoutError:
                 if duration_seconds > 0 and time.monotonic() - started >= duration_seconds:
                     return {

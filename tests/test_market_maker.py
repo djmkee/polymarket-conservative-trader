@@ -108,6 +108,32 @@ def test_pair_quotes_preserve_combined_edge(tmp_path):
     store.close()
 
 
+def test_maker_can_join_best_bid_on_one_tick_spreads(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(
+        Settings(maker_max_markets=1, maker_min_spread=Decimal(".01")),
+        store,
+    )
+    tight = book(
+        yes_bid=".40",
+        yes_ask=".41",
+        no_bid=".59",
+        no_ask=".60",
+    )
+
+    result = maker.run([tight])
+
+    buys = [quote for quote in store.open_quotes() if quote["side"] == "BUY"]
+    assert result["maker_markets"] == 1
+    assert result["maker_quotes"] == 2
+    assert {Decimal(quote["price"]) for quote in buys} == {
+        Decimal(".40"),
+        Decimal(".59"),
+    }
+    assert sum(Decimal(quote["price"]) for quote in buys) <= Decimal(".99")
+    store.close()
+
+
 def test_maker_order_size_compounds_from_current_equity(tmp_path):
     store = AuditStore(tmp_path / "paper.sqlite3")
     maker = PaperMarketMaker(
@@ -225,6 +251,7 @@ def test_new_market_must_end_inside_configured_window(tmp_path):
 
     assert result["maker_markets"] == 0
     assert result["maker_quotes"] == 0
+    assert result["maker_rejected_horizon"] == 1
     store.close()
 
 
@@ -314,6 +341,7 @@ def test_abrupt_midpoint_jump_pauses_new_market(tmp_path):
 
     assert result["maker_markets"] == 0
     assert result["maker_quotes"] == 0
+    assert result["maker_rejected_toxic"] == 1
     store.close()
 
 
@@ -356,6 +384,7 @@ def test_stale_two_sided_book_places_no_new_quotes(tmp_path):
 
     assert result["maker_markets"] == 0
     assert result["maker_quotes"] == 0
+    assert result["maker_rejected_stale"] == 1
     store.close()
 
 

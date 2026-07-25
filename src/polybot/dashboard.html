@@ -130,7 +130,10 @@
     function eventText(item){
       const p=item.payload||{}; const map={
         realtime_session:`Tracking ${p.tracked_markets||0} markets`,
-        realtime_cycle:`Quote cycle: ${p.maker_quotes||0} quotes across ${p.maker_markets||0} eligible markets`,
+        realtime_cycle:p.maker_markets
+          ?`Quote cycle: ${p.maker_quotes||0} quotes across ${p.maker_markets} eligible markets`
+          :`No eligible markets: ${dominantRejection(p)}`,
+        realtime_reselect:`Rebuilding market universe: ${dominantRejection(p)}`,
         paper_pair_merged:`Merged ${p.shares||0} paired shares`,
         paper_balanced_redeemed:`Released ${p.shares||0} balanced shares back to cash`,
         paper_profit_exit:`Took a profitable early exit`,
@@ -141,6 +144,19 @@
         paper_manual_close:`Position manually closed`,
         cycle:`Completed scanner cycle`
       }; return map[item.kind] || item.kind.replaceAll('_',' ');
+    }
+    function dominantRejection(p){
+      const reasons=[
+        ['outside 6h–30d horizon',p.maker_rejected_horizon],
+        ['price outside safety range',p.maker_rejected_price],
+        ['spread too narrow',p.maker_rejected_spread],
+        ['stale books',p.maker_rejected_stale],
+        ['recent price jump',p.maker_rejected_toxic]
+      ].sort((a,b)=>Number(b[1]||0)-Number(a[1]||0));
+      const top=reasons[0];
+      return top&&Number(top[1])>0
+        ?`${top[0]} (${top[1]} of ${p.maker_scanned_markets||0})`
+        :'no market passed every safety gate';
     }
     async function closePosition(token,shares,question){
       if(!confirm(`Close ${shares} paper shares at the latest executable bid?\n\n${question}\n\nThis may realize a simulated loss.`))return;

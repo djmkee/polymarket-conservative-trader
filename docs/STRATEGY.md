@@ -17,6 +17,10 @@ microprice provides the internal fair value, inventory imbalance skews the
 reservation price toward neutral, and abrupt midpoint moves suspend new quotes.
 Quotes expire every cycle. A fill is recognized only if a later executable book
 moves strictly through the quote. Inventory and cash persist in SQLite.
+On a one-tick spread the bot may join the current best bid instead of improving
+it. The paired YES/NO prices must still preserve the configured combined-cost
+edge, and the conservative paper model still requires the market to move
+strictly through a quote before counting a fill.
 
 Order size compounds from current marked equity. The default target is 2% of
 equity expressed as complete-set shares, subject to the five-share/minimum-order

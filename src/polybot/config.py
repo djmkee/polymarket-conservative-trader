@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     maker_order_equity_pct: Decimal = Decimal("0.02")
     maker_max_capital_pct: Decimal = Decimal("0.20")
     maker_max_directional_exposure_pct: Decimal = Decimal("0.02")
-    maker_min_spread: Decimal = Decimal("0.02")
+    maker_min_spread: Decimal = Decimal("0.01")
     maker_min_price: Decimal = Decimal("0.15")
     maker_max_price: Decimal = Decimal("0.85")
     maker_min_hours_to_end: int = 6
@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     realtime_quote_interval_seconds: int = 5
     realtime_refresh_seconds: int = 900
     realtime_max_markets: int = 20
+    realtime_zero_market_reselect_cycles: int = 3
     realtime_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     min_net_edge: Decimal = Decimal("0.0075")
     slippage_bps: Decimal = Decimal(20)
@@ -115,6 +116,10 @@ class Settings(BaseSettings):
             raise ValueError("realtime_refresh_seconds must be at least 60.")
         if not 1 <= self.realtime_max_markets <= 200:
             raise ValueError("realtime_max_markets must be between 1 and 200.")
+        if not 1 <= self.realtime_zero_market_reselect_cycles <= 20:
+            raise ValueError(
+                "realtime_zero_market_reselect_cycles must be between 1 and 20."
+            )
         if not 0 < self.maker_min_price < self.maker_max_price < 1:
             raise ValueError("Invalid maker price range.")
         if (

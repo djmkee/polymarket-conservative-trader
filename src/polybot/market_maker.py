@@ -12,6 +12,7 @@ class PaperMarketMaker:
     def __init__(self, settings: Settings, store: AuditStore):
         self.s = settings
         self.store = store
+        self._last_selection_stats: dict[str, int] = {}
         self.store.init_paper_account(str(settings.initial_equity))
 
     def run(self, markets: list[Market]) -> dict[str, int | str | bool]:
@@ -34,6 +35,12 @@ class PaperMarketMaker:
         quotes = 0 if halted else self._place_quotes(selected)
         return {
             "maker_markets": len(selected),
+            "maker_scanned_markets": self._last_selection_stats.get("scanned", 0),
+            "maker_rejected_stale": self._last_selection_stats.get("stale", 0),
+            "maker_rejected_horizon": self._last_selection_stats.get("horizon", 0),
+            "maker_rejected_price": self._last_selection_stats.get("price", 0),
+            "maker_rejected_spread": self._last_selection_stats.get("spread", 0),
+            "maker_rejected_toxic": self._last_selection_stats.get("toxic", 0),
             "maker_seeded": 0,
             "maker_balanced_redeemed": released,
             "maker_fills": fills,
@@ -54,14 +61,26 @@ class PaperMarketMaker:
 
     def _select_markets(self, markets: list[Market]) -> list[Market]:
         now = datetime.now(UTC)
+        stats = {
+            "scanned": len(markets),
+            "stale": 0,
+            "horizon": 0,
+            "price": 0,
+            "spread": 0,
+            "toxic": 0,
+        }
         existing = {item["condition_id"] for item in self.store.inventory()}
-        existing_markets = [
-            market
-            for market in markets
-            if market.condition_id in existing
-            and not self._market_book_is_stale(market, now)
-            and not self._is_toxic(market)
-        ]
+        existing_markets = []
+        for market in markets:
+            if market.condition_id not in existing:
+                continue
+            if self._market_book_is_stale(market, now):
+                stats["stale"] += 1
+                continue
+            if self._is_toxic(market):
+                stats["toxic"] += 1
+                continue
+            existing_markets.append(market)
         existing_markets.sort(key=lambda market: market.liquidity, reverse=True)
         available_new_slots = max(0, self.s.maker_max_markets - len(existing))
         eligible: list[tuple[Market, Decimal]] = []
@@ -69,26 +88,34 @@ class PaperMarketMaker:
             if market.condition_id in existing:
                 continue
             if self._market_book_is_stale(market, now):
+                stats["stale"] += 1
                 continue
             if not market.end_time:
+                stats["horizon"] += 1
                 continue
             time_to_end = market.end_time - now
             if time_to_end <= timedelta(hours=self.s.maker_min_hours_to_end):
+                stats["horizon"] += 1
                 continue
             if time_to_end > timedelta(hours=self.s.maker_max_hours_to_end):
+                stats["horizon"] += 1
                 continue
             prices = (market.yes_bid, market.yes_ask, market.no_bid, market.no_ask)
             if min(prices) < self.s.maker_min_price or max(prices) > self.s.maker_max_price:
+                stats["price"] += 1
                 continue
             yes_spread = market.yes_ask - market.yes_bid
             no_spread = market.no_ask - market.no_bid
             if min(yes_spread, no_spread) < self.s.maker_min_spread:
+                stats["spread"] += 1
                 continue
             if self._is_toxic(market):
+                stats["toxic"] += 1
                 continue
             eligible.append((market, self._selection_score(market)))
         eligible.sort(key=lambda item: (item[1], item[0].liquidity), reverse=True)
         new_markets = [item[0] for item in eligible[:available_new_slots]]
+        self._last_selection_stats = stats
         return existing_markets[: self.s.maker_max_markets] + new_markets
 
     def _release_balanced_inventory(self) -> int:
@@ -622,9 +649,9 @@ class PaperMarketMaker:
             no_buy -= excess - excess / Decimal(2)
         yes_buy = (yes_buy / tick).to_integral_value(rounding=ROUND_DOWN) * tick
         no_buy = (no_buy / tick).to_integral_value(rounding=ROUND_DOWN) * tick
-        if yes_buy <= market.yes_bid or yes_buy >= market.yes_ask:
+        if yes_buy < market.yes_bid or yes_buy >= market.yes_ask:
             yes_buy = None
-        if no_buy <= market.no_bid or no_buy >= market.no_ask:
+        if no_buy < market.no_bid or no_buy >= market.no_ask:
             no_buy = None
         return yes_buy, no_buy
 
