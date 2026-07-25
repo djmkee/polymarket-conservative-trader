@@ -169,6 +169,7 @@ def test_unchanged_quotes_keep_their_resting_time_and_queue(tmp_path):
     assert result["maker_fills"] == 0
     assert first == second
     assert first[("yes", "BUY")][2] == "100"
+    assert store.dashboard_state()["quotes"][0]["question"] == "Test market?"
     store.close()
 
 

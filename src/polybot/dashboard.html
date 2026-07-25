@@ -79,6 +79,13 @@
             <tbody id="positions"></tbody></table><div id="positionsEmpty" class="empty">No position held now. Closed cycles remain visible below.</div></div>
         </div>
         <div class="panel section">
+          <div class="panel-head"><h2>Resting paper orders</h2><span id="restingCount" class="badge">0 open</span></div>
+          <div class="body"><table><thead><tr><th>Market</th><th>Outcome</th><th>Side</th>
+            <th>Price</th><th>Shares</th><th>Queue ahead</th><th>Resting</th></tr></thead>
+            <tbody id="resting"></tbody></table>
+            <div id="restingEmpty" class="empty">No paper order is resting now.</div></div>
+        </div>
+        <div class="panel section">
           <div class="panel-head"><h2>Recent fills</h2><span id="fillCount" class="badge">0 fills</span></div>
           <div class="body"><table><thead><tr><th>Time</th><th>Token</th><th>Side</th><th>Price</th>
             <th>Shares</th><th>Notional</th></tr></thead><tbody id="fills"></tbody></table>
@@ -200,6 +207,13 @@
           <td class="${pnlClass(p.unrealized_pnl)}">${directional?money(p.unrealized_pnl):'—'}</td>
           <td><button class="close" ${directional&&p.bid?'':'disabled'} onclick='closePosition(${JSON.stringify(p.token_id)},${JSON.stringify(p.directional_shares)},${JSON.stringify(p.question)})'>Close</button></td></tr>`;
       }).join('');
+      const resting=state.quotes||[];
+      $('restingCount').textContent=`${resting.length} open`;$('restingEmpty').style.display=resting.length?'none':'block';
+      $('resting').innerHTML=resting.map(q=>`<tr><td class="question">${esc(q.question||'Market details pending')}</td>
+        <td class="${q.outcome==='YES'?'yes':'no'}">${esc(q.outcome)}</td>
+        <td class="${q.side==='BUY'?'yes':'pnl-neg'}">${esc(q.side)}</td><td>${num(q.price,4)}</td>
+        <td>${num(q.size,4)}</td><td>${num(q.queue_ahead,4)}</td>
+        <td>${duration(Math.max(0,(Date.now()-new Date(q.created_at).getTime())/1000))}</td></tr>`).join('');
       $('fillCount').textContent=`${state.fills.length} recent`;$('fillsEmpty').style.display=state.fills.length?'none':'block';
       $('fills').innerHTML=state.fills.map(f=>`<tr><td>${new Date(f.created_at).toLocaleTimeString()}</td>
         <td class="muted">${short(f.token_id)}</td><td class="${f.side==='BUY'?'yes':'pnl-neg'}">${f.side}</td>

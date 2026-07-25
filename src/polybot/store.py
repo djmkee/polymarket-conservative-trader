@@ -35,6 +35,7 @@ class AuditStore:
                 id INTEGER PRIMARY KEY,
                 token_id TEXT NOT NULL,
                 condition_id TEXT NOT NULL,
+                question TEXT NOT NULL DEFAULT '',
                 outcome TEXT NOT NULL,
                 side TEXT NOT NULL,
                 price TEXT NOT NULL,
@@ -97,6 +98,9 @@ class AuditStore:
         self._ensure_column("paper_directional", "opened_at", "TEXT")
         self._ensure_column(
             "paper_quotes", "queue_ahead", "TEXT NOT NULL DEFAULT '0'"
+        )
+        self._ensure_column(
+            "paper_quotes", "question", "TEXT NOT NULL DEFAULT ''"
         )
         self.db.commit()
 
@@ -202,7 +206,7 @@ class AuditStore:
 
     def open_quotes(self) -> list[dict[str, str | int]]:
         rows = self.db.execute(
-            """SELECT id, token_id, condition_id, outcome, side, price, size,
+            """SELECT id, token_id, condition_id, question, outcome, side, price, size,
                       queue_ahead, created_at
                FROM paper_quotes WHERE status = 'OPEN'"""
         ).fetchall()
@@ -210,6 +214,7 @@ class AuditStore:
             "id",
             "token_id",
             "condition_id",
+            "question",
             "outcome",
             "side",
             "price",
@@ -228,15 +233,17 @@ class AuditStore:
         price: str,
         size: str,
         queue_ahead: str = "0",
+        question: str = "",
     ) -> int:
         cursor = self.db.execute(
             """INSERT INTO paper_quotes
-               (token_id, condition_id, outcome, side, price, size, queue_ahead,
-                status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
+               (token_id, condition_id, question, outcome, side, price, size,
+                queue_ahead, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
             (
                 token_id,
                 condition_id,
+                question,
                 outcome,
                 side,
                 price,

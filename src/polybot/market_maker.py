@@ -699,6 +699,7 @@ class PaperMarketMaker:
                         {
                             "token_id": token,
                             "condition_id": market.condition_id,
+                            "question": market.question,
                             "outcome": outcome,
                             "side": "BUY",
                             "price": str(buy),
@@ -725,6 +726,7 @@ class PaperMarketMaker:
                         {
                             "token_id": token,
                             "condition_id": market.condition_id,
+                            "question": market.question,
                             "outcome": outcome,
                             "side": "SELL",
                             "price": str(sell),
@@ -753,6 +755,7 @@ class PaperMarketMaker:
                 quote["price"],
                 quote["size"],
                 quote["queue_ahead"],
+                quote["question"],
             )
         return len(desired_by_key)
 
