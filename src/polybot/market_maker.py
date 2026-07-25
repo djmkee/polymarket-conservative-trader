@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 
 from .config import Settings
 from .models import Market
@@ -17,6 +17,7 @@ class PaperMarketMaker:
     def run(self, markets: list[Market]) -> dict[str, int | str | bool]:
         token_books = self._token_books(markets)
         fills = self._settle_quotes(token_books)
+        profit_exits = self._take_profitable_exits(token_books)
         selected = self._select_markets(markets)
         seeded = self._seed_complete_sets(selected)
         equity = self._equity(token_books)
@@ -31,6 +32,7 @@ class PaperMarketMaker:
             "maker_markets": len(selected),
             "maker_seeded": seeded,
             "maker_fills": fills,
+            "maker_profit_exits": profit_exits,
             "maker_quotes": quotes,
             "paper_equity": f"{equity:.4f}",
             "maker_halted": halted,
@@ -92,9 +94,7 @@ class PaperMarketMaker:
     def _settle_quotes(self, books: dict[str, dict[str, Decimal | str]]) -> int:
         account = self.store.paper_account()
         cash = Decimal(account["cash"])
-        inventory = {
-            item["token_id"]: Decimal(item["shares"]) for item in self.store.inventory()
-        }
+        directional = self.store.directional()
         fills = 0
         for quote in self.store.open_quotes():
             book = books.get(str(quote["token_id"]))
@@ -102,11 +102,19 @@ class PaperMarketMaker:
             size = Decimal(str(quote["size"]))
             fill = False
             if book and quote["side"] == "BUY":
-                fill = Decimal(str(book["ask"])) < price and cash >= price * size
+                position = directional.get(str(quote["token_id"]))
+                directional_shares = Decimal(position["shares"]) if position else Decimal(0)
+                fill = (
+                    Decimal(str(book["ask"])) < price
+                    and cash >= price * size
+                    and directional_shares + size <= self.s.maker_max_directional_shares
+                )
             elif book and quote["side"] == "SELL":
+                position = directional.get(str(quote["token_id"]))
                 fill = (
                     Decimal(str(book["bid"])) > price
-                    and inventory.get(str(quote["token_id"]), Decimal(0)) >= size
+                    and position is not None
+                    and Decimal(position["shares"]) >= size
                 )
             if fill:
                 delta = size if quote["side"] == "BUY" else -size
@@ -125,16 +133,86 @@ class PaperMarketMaker:
                     str(price),
                     str(size),
                 )
+                if quote["side"] == "BUY":
+                    self.store.add_directional_buy(
+                        str(quote["token_id"]), str(size), str(price * size)
+                    )
+                else:
+                    sold_cost = Decimal(
+                        self.store.consume_directional(str(quote["token_id"]), str(size))
+                    )
+                    self.store.add_paper_metrics(str(price * size - sold_cost), "0")
                 fills += 1
             else:
                 self.store.close_quote(int(quote["id"]), "CANCELLED")
         self.store.set_paper_account(str(cash), account["peak_equity"])
         return fills
 
-    def _place_quotes(self, markets: list[Market]) -> int:
+    def _take_profitable_exits(
+        self, books: dict[str, dict[str, Decimal | str]]
+    ) -> int:
+        account = self.store.paper_account()
+        cash = Decimal(account["cash"])
+        exits = 0
+        slippage = self.s.slippage_bps / Decimal(10000)
         inventory = {
-            item["token_id"]: Decimal(item["shares"]) for item in self.store.inventory()
+            item["token_id"]: item for item in self.store.inventory()
         }
+        for token_id, position in self.store.directional().items():
+            book = books.get(token_id)
+            item = inventory.get(token_id)
+            if not book or not item:
+                continue
+            shares = Decimal(position["shares"])
+            if shares <= 0:
+                continue
+            bid = Decimal(str(book["bid"]))
+            average_cost = Decimal(position["cost_basis"]) / shares
+            fee_per_share = self.s.maker_max_fee_rate * bid * (Decimal(1) - bid)
+            net_price = bid - fee_per_share - slippage
+            if net_price < average_cost + self.s.maker_take_profit_per_share:
+                continue
+            fee = fee_per_share * shares
+            proceeds = bid * shares - fee - slippage * shares
+            sold_cost = Decimal(self.store.consume_directional(token_id, str(shares)))
+            self.store.adjust_inventory(
+                token_id,
+                item["condition_id"],
+                item["question"],
+                item["outcome"],
+                str(-shares),
+            )
+            cash += proceeds
+            self.store.add_paper_metrics(str(proceeds - sold_cost), str(fee))
+            quote_id = self.store.add_quote(
+                token_id,
+                item["condition_id"],
+                item["outcome"],
+                "SELL",
+                str(bid),
+                str(shares),
+            )
+            self.store.add_fill(quote_id, token_id, "SELL", str(bid), str(shares))
+            self.store.record(
+                "paper_profit_exit",
+                {
+                    "token_id": token_id,
+                    "shares": shares,
+                    "bid": bid,
+                    "average_cost": average_cost,
+                    "fee": fee,
+                    "slippage": slippage * shares,
+                    "realized_profit": proceeds - sold_cost,
+                },
+            )
+            exits += 1
+        self.store.set_paper_account(str(cash), account["peak_equity"])
+        return exits
+
+    def _place_quotes(self, markets: list[Market]) -> int:
+        directional = self.store.directional()
+        account = self.store.paper_account()
+        cash = Decimal(account["cash"])
         quotes = 0
         for market in markets:
             size = max(self.s.maker_order_shares, market.min_order_size)
@@ -146,11 +224,24 @@ class PaperMarketMaker:
                 buy = min(bid + tick, ask - tick)
                 sell = max(ask - tick, bid + tick)
                 if buy < sell:
-                    self.store.add_quote(
-                        token, market.condition_id, outcome, "BUY", str(buy), str(size)
-                    )
-                    quotes += 1
-                    if inventory.get(token, Decimal(0)) >= size:
+                    position = directional.get(token)
+                    directional_shares = Decimal(position["shares"]) if position else Decimal(0)
+                    if (
+                        directional_shares + size <= self.s.maker_max_directional_shares
+                        and cash >= buy * size
+                    ):
+                        self.store.add_quote(
+                            token, market.condition_id, outcome, "BUY", str(buy), str(size)
+                        )
+                        quotes += 1
+                    if position and Decimal(position["shares"]) >= size:
+                        average_cost = Decimal(position["cost_basis"]) / Decimal(
+                            position["shares"]
+                        )
+                        sell = max(sell, average_cost + self.s.maker_take_profit_per_share)
+                        sell = (sell / tick).to_integral_value(rounding=ROUND_UP) * tick
+                        if sell >= Decimal(1):
+                            continue
                         self.store.add_quote(
                             token,
                             market.condition_id,
