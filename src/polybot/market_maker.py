@@ -32,7 +32,7 @@ class PaperMarketMaker:
         halted = equity <= Decimal(account["initial_equity"]) * (
             Decimal(1) - self.s.daily_loss_limit_pct
         )
-        quotes = 0 if halted else self._place_quotes(selected)
+        quotes = self._place_quotes([] if halted else selected)
         return {
             "maker_markets": len(selected),
             "maker_scanned_markets": self._last_selection_stats.get("scanned", 0),
@@ -192,21 +192,56 @@ class PaperMarketMaker:
             price = Decimal(str(quote["price"]))
             size = Decimal(str(quote["size"]))
             fill = False
-            if book and self._book_is_stale(book):
+            fill_evidence = ""
+            observed_volume = Decimal(0)
+            if not book:
+                self.store.close_quote(int(quote["id"]), "NO_BOOK")
+                continue
+            if self._book_is_stale(book):
                 self.store.close_quote(int(quote["id"]), "STALE")
                 continue
-            if book and quote["side"] == "BUY":
+            if quote["side"] == "BUY":
                 position = directional.get(str(quote["token_id"]))
+                crossed = Decimal(str(book["ask"])) < price
+                observed_volume = Decimal(
+                    self.store.public_trade_volume(
+                        str(quote["token_id"]),
+                        "SELL",
+                        str(price),
+                        str(quote["created_at"]),
+                        at_or_better="below",
+                    )
+                )
+                queue_consumed = observed_volume >= (
+                    Decimal(str(quote["queue_ahead"])) + size
+                )
+                fill = crossed or queue_consumed
+                fill_evidence = "book_cross" if crossed else "public_trade"
                 fill = (
-                    Decimal(str(book["ask"])) < price
+                    fill
                     and cash >= price * size
                     and self._directional_room(position, price, size)
                     and deployed + price * size <= capital_cap
                 )
-            elif book and quote["side"] == "SELL":
+            elif quote["side"] == "SELL":
                 position = directional.get(str(quote["token_id"]))
+                crossed = Decimal(str(book["bid"])) > price
+                observed_volume = Decimal(
+                    self.store.public_trade_volume(
+                        str(quote["token_id"]),
+                        "BUY",
+                        str(price),
+                        str(quote["created_at"]),
+                        at_or_better="above",
+                    )
+                )
+                queue_consumed = observed_volume >= (
+                    Decimal(str(quote["queue_ahead"])) + size
+                )
+                fill = crossed or queue_consumed
+                fill_evidence = "book_cross" if crossed else "public_trade"
                 fill = (
-                    Decimal(str(book["bid"])) > price
+                    fill
                     and position is not None
                     and Decimal(position["shares"]) >= size
                 )
@@ -237,9 +272,20 @@ class PaperMarketMaker:
                         self.store.consume_directional(str(quote["token_id"]), str(size))
                     )
                     self.store.add_paper_metrics(str(price * size - sold_cost), "0")
+                self.store.record(
+                    "paper_quote_filled",
+                    {
+                        "quote_id": quote["id"],
+                        "token_id": quote["token_id"],
+                        "side": quote["side"],
+                        "price": price,
+                        "shares": size,
+                        "evidence": fill_evidence,
+                        "queue_ahead": quote["queue_ahead"],
+                        "observed_trade_volume": observed_volume,
+                    },
+                )
                 fills += 1
-            else:
-                self.store.close_quote(int(quote["id"]), "CANCELLED")
         self.store.set_paper_account(str(cash), account["peak_equity"])
         return fills
 
@@ -613,17 +659,33 @@ class PaperMarketMaker:
         capital_cap = self._maker_capital_cap(equity)
         deployed = self._maker_deployed_capital()
         committed = Decimal(0)
-        quotes = 0
+        desired: list[dict[str, str]] = []
         for market in markets:
             size = self._order_size(market, equity)
             if size <= 0:
                 continue
             yes_buy, no_buy = self._pair_buy_prices(market, directional)
             planned = (
-                ("YES", market.yes_token, yes_buy),
-                ("NO", market.no_token, no_buy),
+                (
+                    "YES",
+                    market.yes_token,
+                    yes_buy,
+                    market.yes_bid,
+                    market.yes_bid_size,
+                    market.yes_ask,
+                    market.yes_ask_size,
+                ),
+                (
+                    "NO",
+                    market.no_token,
+                    no_buy,
+                    market.no_bid,
+                    market.no_bid_size,
+                    market.no_ask,
+                    market.no_ask_size,
+                ),
             )
-            for outcome, token, buy in planned:
+            for outcome, token, buy, bid, bid_size, ask, ask_size in planned:
                 if buy is None:
                     continue
                 position = directional.get(token)
@@ -633,23 +695,23 @@ class PaperMarketMaker:
                     and cash - committed >= notional
                     and deployed + committed + notional <= capital_cap
                 ):
-                    self.store.add_quote(
-                        token,
-                        market.condition_id,
-                        outcome,
-                        "BUY",
-                        str(buy),
-                        str(size),
+                    desired.append(
+                        {
+                            "token_id": token,
+                            "condition_id": market.condition_id,
+                            "outcome": outcome,
+                            "side": "BUY",
+                            "price": str(buy),
+                            "size": str(size),
+                            "queue_ahead": str(bid_size if buy <= bid else Decimal(0)),
+                        }
                     )
                     committed += notional
-                    quotes += 1
                 if not position or Decimal(position["shares"]) < size:
                     continue
                 average_cost = Decimal(position["cost_basis"]) / Decimal(
                     position["shares"]
                 )
-                bid = market.yes_bid if outcome == "YES" else market.no_bid
-                ask = market.yes_ask if outcome == "YES" else market.no_ask
                 sell = max(
                     ask - market.tick_size,
                     bid + market.tick_size,
@@ -659,16 +721,51 @@ class PaperMarketMaker:
                     sell / market.tick_size
                 ).to_integral_value(rounding=ROUND_UP) * market.tick_size
                 if sell < Decimal(1):
-                    self.store.add_quote(
-                        token,
-                        market.condition_id,
-                        outcome,
-                        "SELL",
-                        str(sell),
-                        str(size),
+                    desired.append(
+                        {
+                            "token_id": token,
+                            "condition_id": market.condition_id,
+                            "outcome": outcome,
+                            "side": "SELL",
+                            "price": str(sell),
+                            "size": str(size),
+                            "queue_ahead": str(
+                                ask_size if sell >= ask else Decimal(0)
+                            ),
+                        }
                     )
-                    quotes += 1
-        return quotes
+        desired_by_key = {self._quote_key(quote): quote for quote in desired}
+        retained: set[tuple[str, str, Decimal, Decimal]] = set()
+        for quote in self.store.open_quotes():
+            key = self._quote_key(quote)
+            if key in desired_by_key and key not in retained:
+                retained.add(key)
+            else:
+                self.store.close_quote(int(quote["id"]), "CANCELLED")
+        for key, quote in desired_by_key.items():
+            if key in retained:
+                continue
+            self.store.add_quote(
+                quote["token_id"],
+                quote["condition_id"],
+                quote["outcome"],
+                quote["side"],
+                quote["price"],
+                quote["size"],
+                quote["queue_ahead"],
+            )
+        return len(desired_by_key)
+
+    @staticmethod
+    def _quote_key(
+        quote: dict[str, str | int],
+    ) -> tuple[str, str, Decimal, Decimal]:
+        return (
+            str(quote["token_id"]),
+            str(quote["side"]),
+            Decimal(str(quote["price"])),
+            Decimal(str(quote["size"])),
+        )
 
     def _pair_buy_prices(
         self,

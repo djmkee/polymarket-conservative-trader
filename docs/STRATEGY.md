@@ -15,12 +15,14 @@ BUY-YES and BUY-NO
 quotes must preserve the configured combined-cost edge. Depth-weighted
 microprice provides the internal fair value, inventory imbalance skews the
 reservation price toward neutral, and abrupt midpoint moves suspend new quotes.
-Quotes expire every cycle. A fill is recognized only if a later executable book
-moves strictly through the quote. Inventory and cash persist in SQLite.
-On a one-tick spread the bot may join the current best bid instead of improving
-it. The paired YES/NO prices must still preserve the configured combined-cost
-edge, and the conservative paper model still requires the market to move
-strictly through a quote before counting a fill.
+Unchanged quotes remain resting across cycles so their time and queue position
+are not discarded every five seconds. A paper fill requires either a later
+executable book to move strictly through the quote or public
+`last_trade_price` volume to consume the displayed queue ahead plus the bot's
+order size. Merely touching the best bid does not count as a fill. On a
+one-tick spread the bot may join the current best bid, but it records the
+displayed size ahead of the paper order and waits for enough opposite-side
+trading volume. Inventory and cash persist in SQLite.
 
 Order size compounds from current marked equity. The default target is 2% of
 equity expressed as complete-set shares, subject to the five-share/minimum-order

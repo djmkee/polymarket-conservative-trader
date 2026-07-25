@@ -70,3 +70,33 @@ def test_healthy_stream_keeps_unchanged_books_fresh():
     refreshed = cache.markets()[0]
     assert refreshed.yes_updated_at == observed_at
     assert refreshed.no_updated_at == observed_at
+
+
+def test_book_cache_emits_public_trade_without_moving_the_book():
+    cache = LiveBookCache([market()])
+
+    trades = cache.apply(
+        {
+            "event_type": "last_trade_price",
+            "asset_id": "yes",
+            "price": ".40",
+            "size": "25",
+            "side": "SELL",
+            "timestamp": "1782753357257",
+            "transaction_hash": "0xtrade",
+        }
+    )
+
+    assert trades == [
+        {
+            "condition_id": "condition",
+            "token_id": "yes",
+            "price": "0.40",
+            "size": "25",
+            "side": "SELL",
+            "event_type": "last_trade_price",
+            "transaction_hash": "0xtrade",
+            "occurred_at": "1782753357257",
+        }
+    ]
+    assert cache.markets()[0].yes_bid == Decimal(".40")

@@ -78,6 +78,37 @@ class LiveBookCache:
                 if isinstance(change, dict):
                     updates.extend(self._apply_top(change, event_type))
             return updates
+        if event_type == "last_trade_price":
+            token_id = str(
+                payload.get("asset_id")
+                or payload.get("assetId")
+                or payload.get("token_id")
+                or payload.get("tokenId")
+                or ""
+            )
+            identity = self._tokens.get(token_id)
+            price = _decimal(payload.get("price"), Decimal(0))
+            size = _decimal(payload.get("size"), Decimal(0))
+            side = str(payload.get("side") or "").upper()
+            if not identity or price <= 0 or size <= 0 or side not in {"BUY", "SELL"}:
+                return []
+            condition_id, _ = identity
+            return [
+                {
+                    "condition_id": condition_id,
+                    "token_id": token_id,
+                    "price": str(price),
+                    "size": str(size),
+                    "side": side,
+                    "event_type": event_type,
+                    "transaction_hash": str(
+                        payload.get("transaction_hash")
+                        or payload.get("transactionHash")
+                        or ""
+                    ),
+                    "occurred_at": str(payload.get("timestamp") or ""),
+                }
+            ]
         if event_type == "book":
             token_id = str(
                 payload.get("asset_id") or payload.get("assetId") or payload.get("tokenId") or ""

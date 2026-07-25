@@ -39,6 +39,7 @@ class AuditStore:
                 side TEXT NOT NULL,
                 price TEXT NOT NULL,
                 size TEXT NOT NULL,
+                queue_ahead TEXT NOT NULL DEFAULT '0',
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 closed_at TEXT
@@ -78,9 +79,25 @@ class AuditStore:
             );
             CREATE INDEX IF NOT EXISTS idx_market_ticks_condition_time
                 ON market_ticks(condition_id, created_at);
+            CREATE TABLE IF NOT EXISTS public_market_trades (
+                id INTEGER PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                occurred_at TEXT,
+                condition_id TEXT NOT NULL,
+                token_id TEXT NOT NULL,
+                price TEXT NOT NULL,
+                size TEXT NOT NULL,
+                side TEXT NOT NULL,
+                transaction_hash TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_public_trades_token_time
+                ON public_market_trades(token_id, created_at);
             """
         )
         self._ensure_column("paper_directional", "opened_at", "TEXT")
+        self._ensure_column(
+            "paper_quotes", "queue_ahead", "TEXT NOT NULL DEFAULT '0'"
+        )
         self.db.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -185,10 +202,21 @@ class AuditStore:
 
     def open_quotes(self) -> list[dict[str, str | int]]:
         rows = self.db.execute(
-            """SELECT id, token_id, condition_id, outcome, side, price, size
+            """SELECT id, token_id, condition_id, outcome, side, price, size,
+                      queue_ahead, created_at
                FROM paper_quotes WHERE status = 'OPEN'"""
         ).fetchall()
-        keys = ("id", "token_id", "condition_id", "outcome", "side", "price", "size")
+        keys = (
+            "id",
+            "token_id",
+            "condition_id",
+            "outcome",
+            "side",
+            "price",
+            "size",
+            "queue_ahead",
+            "created_at",
+        )
         return [dict(zip(keys, row, strict=True)) for row in rows]
 
     def add_quote(
@@ -199,11 +227,13 @@ class AuditStore:
         side: str,
         price: str,
         size: str,
+        queue_ahead: str = "0",
     ) -> int:
         cursor = self.db.execute(
             """INSERT INTO paper_quotes
-               (token_id, condition_id, outcome, side, price, size, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
+               (token_id, condition_id, outcome, side, price, size, queue_ahead,
+                status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
             (
                 token_id,
                 condition_id,
@@ -211,6 +241,7 @@ class AuditStore:
                 side,
                 price,
                 size,
+                queue_ahead,
                 datetime.now(UTC).isoformat(),
             ),
         )
@@ -381,6 +412,54 @@ class AuditStore:
             ),
         )
         self.db.commit()
+
+    def record_public_trade(
+        self,
+        condition_id: str,
+        token_id: str,
+        price: str,
+        size: str,
+        side: str,
+        transaction_hash: str | None = None,
+        occurred_at: str | None = None,
+    ) -> None:
+        self.db.execute(
+            """INSERT INTO public_market_trades
+               (created_at, occurred_at, condition_id, token_id, price, size,
+                side, transaction_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.now(UTC).isoformat(),
+                occurred_at,
+                condition_id,
+                token_id,
+                price,
+                size,
+                side.upper(),
+                transaction_hash,
+            ),
+        )
+        self.db.commit()
+
+    def public_trade_volume(
+        self,
+        token_id: str,
+        aggressor_side: str,
+        quote_price: str,
+        since_iso: str,
+        *,
+        at_or_better: str,
+    ) -> str:
+        from decimal import Decimal
+
+        comparator = "<=" if at_or_better == "below" else ">="
+        rows = self.db.execute(
+            f"""SELECT size FROM public_market_trades
+                WHERE token_id = ? AND side = ? AND created_at > ?
+                  AND CAST(price AS REAL) {comparator} CAST(? AS REAL)""",
+            (token_id, aggressor_side.upper(), since_iso, quote_price),
+        ).fetchall()
+        return str(sum((Decimal(row[0]) for row in rows), Decimal(0)))
 
     def midpoint_jump(self, token_id: str, since_iso: str) -> str:
         from decimal import Decimal

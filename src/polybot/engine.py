@@ -152,7 +152,7 @@ class Engine:
     async def stream(self, duration_seconds: int = 0) -> dict[str, Any]:
         """Run the public WebSocket paper engine; zero duration means until stopped."""
         started = time.monotonic()
-        sessions = messages = updates = quote_cycles = 0
+        sessions = messages = updates = public_trades = quote_cycles = 0
         latest: dict[str, Any] = {}
         while duration_seconds <= 0 or time.monotonic() - started < duration_seconds:
             discovered = await self.data.active_binary_markets()
@@ -241,14 +241,26 @@ class Engine:
                             cache.mark_stream_alive()
                         changed = cache.apply(message)
                         for update in changed:
-                            self.store.record_tick(
-                                update["condition_id"],
-                                update["token_id"],
-                                update["bid"],
-                                update["ask"],
-                                update["event_type"],
-                            )
-                        updates += len(changed)
+                            if update["event_type"] == "last_trade_price":
+                                self.store.record_public_trade(
+                                    update["condition_id"],
+                                    update["token_id"],
+                                    update["price"],
+                                    update["size"],
+                                    update["side"],
+                                    update["transaction_hash"] or None,
+                                    update["occurred_at"] or None,
+                                )
+                                public_trades += 1
+                            else:
+                                self.store.record_tick(
+                                    update["condition_id"],
+                                    update["token_id"],
+                                    update["bid"],
+                                    update["ask"],
+                                    update["event_type"],
+                                )
+                                updates += 1
                         now = time.monotonic()
                         if now >= next_quote and self.s.maker_enabled:
                             latest = self.maker.run(cache.markets())
@@ -278,6 +290,7 @@ class Engine:
                         "sessions": sessions,
                         "messages": messages,
                         "book_updates": updates,
+                        "public_trades": public_trades,
                         "quote_cycles": quote_cycles,
                         **latest,
                     }
@@ -285,6 +298,7 @@ class Engine:
             "sessions": sessions,
             "messages": messages,
             "book_updates": updates,
+            "public_trades": public_trades,
             "quote_cycles": quote_cycles,
             **latest,
         }

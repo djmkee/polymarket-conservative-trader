@@ -66,7 +66,7 @@
       <div class="card"><div class="label">Cash</div><div id="cash" class="value">—</div><div class="mini">Available paper capital</div></div>
       <div class="card"><div class="label">Realized P&amp;L</div><div id="realized" class="value">—</div><div class="mini">After simulated costs</div></div>
       <div class="card"><div class="label">Unrealized P&amp;L</div><div id="unrealized" class="value">—</div><div class="mini">Directional positions only</div></div>
-      <div class="card"><div class="label">Quote targets</div><div id="quoteCount" class="value">—</div><div class="mini">Current cycle; refreshed continuously</div></div>
+      <div class="card"><div class="label">Resting quotes</div><div id="quoteCount" class="value">—</div><div class="mini">Open paper orders; not positions</div></div>
       <div class="card"><div class="label">Total fees</div><div id="fees" class="value">—</div><div class="mini">Worst-case estimate</div></div>
     </section>
 
@@ -139,9 +139,10 @@
       const p=item.payload||{}; const map={
         realtime_session:`Tracking ${p.tracked_markets||0} markets`,
         realtime_cycle:p.maker_markets
-          ?`Quote cycle: ${p.maker_quotes||0} quotes across ${p.maker_markets} eligible markets`
+          ?`Quote cycle: ${p.maker_quotes||0} resting quotes, ${p.maker_fills||0} fills across ${p.maker_markets} eligible markets`
           :`No eligible markets: ${dominantRejection(p)}`,
         realtime_reselect:`Rebuilding market universe: ${dominantRejection(p)}`,
+        paper_quote_filled:`Paper fill confirmed by ${p.evidence==='public_trade'?'public trade volume':'a strict book cross'}`,
         paper_pair_merged:`Merged ${p.shares||0} paired shares`,
         paper_balanced_redeemed:`Released ${p.shares||0} balanced shares back to cash`,
         paper_profit_exit:`Took a profitable early exit`,

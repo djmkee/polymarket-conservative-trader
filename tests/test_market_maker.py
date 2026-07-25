@@ -134,6 +134,103 @@ def test_maker_can_join_best_bid_on_one_tick_spreads(tmp_path):
     store.close()
 
 
+def test_unchanged_quotes_keep_their_resting_time_and_queue(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(
+        Settings(maker_max_markets=1, maker_compound=False),
+        store,
+    )
+    tight = book(
+        yes_bid=".40",
+        yes_ask=".41",
+        no_bid=".59",
+        no_ask=".60",
+    )
+
+    maker.run([tight])
+    first = {
+        (quote["token_id"], quote["side"]): (
+            quote["id"],
+            quote["created_at"],
+            quote["queue_ahead"],
+        )
+        for quote in store.open_quotes()
+    }
+    result = maker.run([tight])
+    second = {
+        (quote["token_id"], quote["side"]): (
+            quote["id"],
+            quote["created_at"],
+            quote["queue_ahead"],
+        )
+        for quote in store.open_quotes()
+    }
+
+    assert result["maker_fills"] == 0
+    assert first == second
+    assert first[("yes", "BUY")][2] == "100"
+    store.close()
+
+
+def test_public_sell_trade_fills_improved_resting_buy(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(
+        Settings(maker_max_markets=1, maker_compound=False),
+        store,
+    )
+    maker.run([book()])
+    yes_quote = next(
+        quote
+        for quote in store.open_quotes()
+        if quote["token_id"] == "yes" and quote["side"] == "BUY"
+    )
+    assert Decimal(yes_quote["price"]) == Decimal(".41")
+    assert Decimal(yes_quote["queue_ahead"]) == 0
+    store.record_public_trade(
+        "condition", "yes", ".41", "5", "SELL", "0xtrade"
+    )
+
+    result = maker.run([book()])
+
+    assert result["maker_fills"] == 1
+    assert store.directional()["yes"]["shares"] == "5"
+    event = store.db.execute(
+        "SELECT payload FROM events WHERE kind = 'paper_quote_filled'"
+    ).fetchone()
+    assert '"evidence": "public_trade"' in event[0]
+    store.close()
+
+
+def test_best_bid_quote_waits_for_queue_ahead_to_trade(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(
+        Settings(maker_max_markets=1, maker_compound=False),
+        store,
+    )
+    tight = book(
+        yes_bid=".40",
+        yes_ask=".41",
+        no_bid=".59",
+        no_ask=".60",
+    )
+    maker.run([tight])
+    store.record_public_trade(
+        "condition", "yes", ".40", "104", "SELL", "0xpartial"
+    )
+
+    first = maker.run([tight])
+    assert first["maker_fills"] == 0
+
+    store.record_public_trade(
+        "condition", "yes", ".40", "1", "SELL", "0xrest"
+    )
+    second = maker.run([tight])
+
+    assert second["maker_fills"] == 1
+    assert store.directional()["yes"]["shares"] == "5"
+    store.close()
+
+
 def test_maker_order_size_compounds_from_current_equity(tmp_path):
     store = AuditStore(tmp_path / "paper.sqlite3")
     maker = PaperMarketMaker(
