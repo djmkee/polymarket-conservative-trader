@@ -47,7 +47,13 @@ class GammaClient:
     async def active_binary_markets(self, limit: int = 100) -> list[Market]:
         response = await self.client.get(
             "/markets",
-            params={"active": "true", "closed": "false", "limit": limit, "order": "liquidityNum"},
+            params={
+                "active": "true",
+                "closed": "false",
+                "limit": limit,
+                "order": "liquidityNum",
+                "ascending": "false",
+            },
         )
         response.raise_for_status()
         result: list[Market] = []
