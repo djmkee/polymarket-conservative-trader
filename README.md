@@ -15,8 +15,8 @@ when the expected edge is too small.
 - Detects conservative near-resolution convergence candidates.
 - Sizes positions as a percentage of current equity.
 - Applies per-trade, portfolio, daily-loss, drawdown and correlation limits.
-- Simulates fills, fees, slippage and mark-to-market P&L in paper mode.
-- Persists decisions and trades to SQLite for auditability.
+- Applies a conservative slippage buffer and records paper order candidates.
+- Persists scanner decisions and candidates to SQLite for auditability.
 - Requires multiple explicit gates before live execution can be added/enabled.
 
 ## Quick start
