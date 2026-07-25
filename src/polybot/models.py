@@ -28,6 +28,14 @@ class Market:
 
 
 @dataclass(frozen=True)
+class MarketGroup:
+    event_id: str
+    title: str
+    neg_risk_id: str
+    markets: tuple[Market, ...]
+
+
+@dataclass(frozen=True)
 class Signal:
     strategy: str
     condition_id: str
