@@ -17,6 +17,8 @@ when the expected edge is too small.
 - Runs a persistent post-only market-making simulator across up to three markets.
 - Seeds balanced YES/NO complete sets and tracks cash, inventory, quotes and fills.
 - Counts a paper fill only after a later executable book moves through the quote.
+- Tracks directional cost basis and exits profitable excess inventory before resolution.
+- Prefers fee-free maker exits; immediate exits must clear worst-case fees and slippage.
 - Detects conservative near-resolution convergence candidates.
 - Sizes positions as a percentage of current equity.
 - Applies per-trade, portfolio, daily-loss, drawdown and correlation limits.
