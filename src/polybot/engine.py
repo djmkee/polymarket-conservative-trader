@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from .config import Settings
 from .market_data import ClobClient, GammaClient
+from .market_maker import PaperMarketMaker
 from .models import Portfolio
 from .risk import RiskManager
 from .store import AuditStore
@@ -19,6 +20,7 @@ class Engine:
         self.arb = CompleteSetArbitrage()
         self.review = NearResolutionCandidate()
         self.neg_risk = NegativeRiskArbitrage()
+        self.maker = PaperMarketMaker(settings, self.store)
         self.portfolio = Portfolio(
             cash=settings.initial_equity,
             peak_equity=settings.initial_equity,
@@ -35,6 +37,7 @@ class Engine:
         markets = await self.clob.executable_books(discovered)
         discovered_groups = await self.data.active_negative_risk_groups()
         groups = await self.clob.executable_groups(discovered_groups)
+        maker_result = self.maker.run(markets) if self.s.maker_enabled else {}
         candidates = orders = reviews = 0
         group_candidates = 0
         best_group_edge: Decimal | None = None
@@ -125,6 +128,7 @@ class Engine:
                 "negative_risk_groups": len(groups),
                 "negative_risk_candidates": group_candidates,
                 "best_negative_risk_edge": best_group_edge,
+                **maker_result,
             },
         )
         return {
@@ -138,4 +142,5 @@ class Engine:
             "best_group_edge": (
                 f"{best_group_edge:.4%}" if best_group_edge is not None else "n/a"
             ),
+            **maker_result,
         }
