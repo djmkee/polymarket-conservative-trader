@@ -17,16 +17,26 @@ reservation price toward neutral, and abrupt midpoint moves suspend new quotes.
 Quotes expire every cycle. A fill is recognized only if a later executable book
 moves strictly through the quote. Inventory and cash persist in SQLite.
 
+Order size compounds from current marked equity. The default target is 2% of
+equity expressed as complete-set shares, subject to the five-share/minimum-order
+floor and the 5% per-market cap. Total maker capital is capped at 20% of current
+equity and any unmatched directional cost basis is capped at 2%. At $300 the
+default target is six shares; at $600 it is twelve. Fixed-size mode remains
+available by setting `POLYBOT_MAKER_COMPOUND=false`.
+
 When only one paired leg fills, the opposite quote is capped so that the pair
-still retains the target edge. After the hedge timer expires, paper mode tries
-an immediate opposite-side hedge or a controlled sale only when the estimated
-loss remains inside the configured per-share cap. Filled YES/NO directional
-pairs are merged at their guaranteed $1 complete-set value.
+still retains the target edge. After the 15-second hedge timer expires, paper
+mode tries an immediate opposite-side hedge or a controlled sale when the
+estimated loss remains inside the configured per-share cap. An unmatched leg is
+forcibly flattened after 60 seconds rather than silently becoming a prediction
+bet. Filled YES/NO directional pairs are merged at their guaranteed $1
+complete-set value.
 
 **Real-time paper feed:** The recommended Windows runner subscribes to public
 market WebSockets, journals top-of-book changes, refreshes paper quotes every
-five seconds and periodically rebuilds the tracked universe. The one-cycle
-scanner remains available as a slower fallback.
+five seconds and periodically rebuilds the tracked universe. New quotes and
+simulated fills are rejected when either side of the cached book is older than
+30 seconds. The one-cycle scanner remains available as a slower fallback.
 
 Transaction count is a secondary metric. The engine may place many quotes but
 does not manufacture fills or trade through a negative expected edge.
@@ -57,3 +67,10 @@ verify the outcome and interpret the written resolution criteria.
 
 Backtests will use walk-forward evaluation and conservative fills. Parameters
 will not be selected on the test period.
+
+The external-sportsbook strategy is not enabled without a fresh, independently
+verified odds feed. Historical evidence shows that completed paired arbitrage
+can be profitable while stale quotes and unmatched legs can erase much of that
+profit. Five-minute crypto markets also remain disabled: a historical
+second-by-second dataset is useful for research, but its publisher reported a
+positive backtest followed by a live loss after fees.

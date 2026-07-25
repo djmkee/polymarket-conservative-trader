@@ -93,6 +93,19 @@
           <div class="wallet-row"><div><strong>Funding / withdrawal</strong><div class="mini">Available after a separately reviewed live adapter</div></div>
             <button class="disabled" disabled>Not connected</button></div>
         </div>
+        <div class="panel wallet">
+          <div class="label">Sizing &amp; residual risk</div>
+          <div class="wallet-row"><div><strong>Order sizing</strong><div class="mini">Recalculated from current equity</div></div>
+            <div id="sizingMode" class="mode">—</div></div>
+          <div class="wallet-row"><div><strong>Maker capital</strong><div class="mini">Maximum portfolio allocation</div></div>
+            <div id="capitalLimit">—</div></div>
+          <div class="wallet-row"><div><strong>One-leg protection</strong><div class="mini">Hedge attempt / mandatory paper exit</div></div>
+            <div id="hedgeTiming">—</div></div>
+          <div class="wallet-row"><div><strong>Completed-pair P&amp;L</strong><div class="mini">Profit from merged YES + NO fills</div></div>
+            <div id="pairedPnl">—</div></div>
+          <div class="wallet-row"><div><strong>Directional-residual P&amp;L</strong><div class="mini">Early, manual and forced exits</div></div>
+            <div id="directionalPnl">—</div></div>
+        </div>
         <div class="panel">
           <div class="panel-head"><h2>Bot activity</h2><span class="badge">Live journal</span></div>
           <div id="events" class="feed"><div class="empty">Starting activity stream…</div></div>
@@ -119,8 +132,9 @@
         paper_pair_merged:`Merged ${p.shares||0} paired shares`,
         paper_profit_exit:`Took a profitable early exit`,
         paper_hedge_escalated:`Escalated an unmatched hedge`,
-        paper_hedge_flattened:`Flattened an unmatched position`,
+        paper_hedge_flattened:p.forced?`Force-closed an unmatched position`:`Flattened an unmatched position`,
         paper_hedge_blocked:`Exit blocked by loss cap`,
+        paper_hedge_stale_book:`Hedge paused: cached book is stale`,
         paper_manual_close:`Position manually closed`,
         cycle:`Completed scanner cycle`
       }; return map[item.kind] || item.kind.replaceAll('_',' ');
@@ -137,6 +151,17 @@
       const a=state.account;$('equity').textContent=money(a.equity);$('cash').textContent=money(a.cash);
       setPnl('realized',a.realized_pnl);setPnl('unrealized',a.unrealized_pnl);$('fees').textContent=money(a.fees);
       $('quoteCount').textContent=state.quotes.length;$('positionCount').textContent=`${state.positions.length} tokens`;
+      const s=state.strategy||{};
+      $('sizingMode').textContent=s.compound
+        ? `${num(Number(s.order_equity_pct)*100,2)}% (min ${num(s.minimum_shares,2)} shares)`
+        : `${num(s.minimum_shares,2)} fixed shares`;
+      $('capitalLimit').textContent=`${num(Number(s.max_capital_pct)*100,2)}% of equity`;
+      $('hedgeTiming').textContent=`${s.hedge_seconds||'—'}s / ${s.force_flatten_seconds||'—'}s`;
+      const perf=state.performance||{};
+      $('pairedPnl').textContent=money(perf.paired_pnl);
+      $('pairedPnl').className=pnlClass(perf.paired_pnl);
+      $('directionalPnl').textContent=money(perf.directional_pnl);
+      $('directionalPnl').className=pnlClass(perf.directional_pnl);
       $('positionsEmpty').style.display=state.positions.length?'none':'block';
       $('positions').innerHTML=state.positions.map(p=>{
         const directional=Number(p.directional_shares)>0; const outcome=p.outcome==='YES'?'yes':'no';

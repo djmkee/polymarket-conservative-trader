@@ -22,6 +22,7 @@ def market() -> Market:
 
 def test_book_cache_applies_snapshot_and_price_change():
     cache = LiveBookCache([market()])
+    snapshot_time = datetime.now(UTC)
 
     snapshot = cache.apply(
         {
@@ -46,3 +47,4 @@ def test_book_cache_applies_snapshot_and_price_change():
     assert updated.yes_bid == Decimal(".42")
     assert updated.yes_ask == Decimal(".44")
     assert updated.yes_bid_size == Decimal(50)
+    assert updated.yes_updated_at >= snapshot_time

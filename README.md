@@ -17,8 +17,11 @@ when the expected edge is too small.
 - Runs a persistent post-only market-making simulator across up to three markets.
 - Runs an event-driven public WebSocket paper engine with automatic reconnects.
 - Quotes paired BUY-YES/BUY-NO orders whose combined target cost preserves an edge.
+- Compounds maker order size from 2% of current equity, with minimum-order,
+  per-market, total-capital and unmatched-directional caps.
 - Skews prices toward neutral inventory and pauses markets after abrupt midpoint moves.
-- Escalates stale one-leg fills into a capped hedge or controlled flattening attempt.
+- Rejects stale books, tries to hedge one-leg fills after 15 seconds and forces
+  unmatched paper positions flat after 60 seconds.
 - Ranks reward-eligible markets alongside spread while refusing unaffordable reward sizes.
 - Seeds balanced YES/NO complete sets and tracks cash, inventory, quotes and fills.
 - Counts a paper fill only after a later executable book moves through the quote.
@@ -30,7 +33,8 @@ when the expected edge is too small.
 - Applies a conservative slippage buffer and records paper order candidates.
 - Persists scanner decisions and candidates to SQLite for auditability.
 - Includes a local browser dashboard for equity, P&L, positions, quotes, fills
-  and confirmed manual paper-position closes.
+  and confirmed manual paper-position closes, including separate completed-pair
+  and directional-residual P&L.
 - Reports the closest observed basket edge, including rejected negative edges.
 - Requires multiple explicit gates before live execution can be added/enabled.
 
@@ -51,10 +55,13 @@ limits until paper results justify doing so.
 
 ## Safety model
 
-Default sizing risks at most 1% of equity on a directional idea, caps one market
-at 5%, caps total open exposure at 25%, stops new entries after a 2% daily loss,
-and halts at an 8% peak-to-trough drawdown. Profits compound automatically
-because every limit is calculated from current realized equity.
+True arbitrage candidates use 1% of current equity per leg. Maker orders target
+2% of current marked equity in complete-set shares, cap one market at 5%, cap
+maker capital at 20%, cap unmatched directional cost at 2%, and cap total open
+exposure at 25%. The engine stops new entries after a 2% daily loss and halts at
+an 8% peak-to-trough drawdown. Percentage sizing compounds upward after profits
+and downward after losses; the five-share exchange/minimum-order floor still
+applies.
 
 Live mode is intentionally not implemented in v0.1. A reliable live adapter
 requires wallet-specific signature type, funder address, API credentials,

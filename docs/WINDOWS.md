@@ -54,7 +54,10 @@ Stop the five-minute task first if it is installed, then start the dashboard:
 Your browser opens `http://127.0.0.1:8765`. Leave the PowerShell window open.
 The dashboard shows cash, marked equity, realized and unrealized P&L,
 directional and balanced inventory, open quotes, fills and the bot's live event
-journal. A directional paper position can be manually closed at the latest
+journal. It also shows whether sizing compounds, the active equity percentage
+and the hedge/forced-exit timers. Completed-pair P&L is separated from
+directional-residual P&L so an apparently profitable total cannot hide one-leg
+losses. A directional paper position can be manually closed at the latest
 recorded executable bid after a confirmation prompt.
 
 The engine maintains public order books, refreshes paper quotes every five

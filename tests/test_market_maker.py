@@ -41,7 +41,7 @@ def test_maker_seeds_quotes_and_marks_complete_set(tmp_path):
     assert result["maker_seeded"] == 1
     assert result["maker_quotes"] == 2
     assert result["paper_equity"] == "300.0000"
-    assert store.paper_summary()["cash"] == "295"
+    assert store.paper_summary()["cash"] == "294"
     store.close()
 
 
@@ -73,7 +73,7 @@ def test_maker_does_not_seed_replacement_beyond_market_cap(tmp_path):
     result = maker.run([replacement])
 
     assert result["maker_seeded"] == 0
-    assert store.paper_summary()["cash"] == "295"
+    assert store.paper_summary()["cash"] == "294"
     store.close()
 
 
@@ -106,6 +106,70 @@ def test_pair_quotes_preserve_combined_edge(tmp_path):
     store.close()
 
 
+def test_maker_order_size_compounds_from_current_equity(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(
+        Settings(initial_equity=Decimal(600), maker_max_markets=1),
+        store,
+    )
+
+    maker.run([book()])
+
+    buys = [quote for quote in store.open_quotes() if quote["side"] == "BUY"]
+    assert {Decimal(quote["size"]) for quote in buys} == {Decimal(12)}
+    assert store.paper_summary()["cash"] == "588"
+    store.close()
+
+
+def test_maker_fixed_size_mode_remains_available(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(
+        Settings(
+            initial_equity=Decimal(600),
+            maker_max_markets=1,
+            maker_compound=False,
+        ),
+        store,
+    )
+
+    maker.run([book()])
+
+    buys = [quote for quote in store.open_quotes() if quote["side"] == "BUY"]
+    assert {Decimal(quote["size"]) for quote in buys} == {Decimal(5)}
+    store.close()
+
+
+def test_maker_cap_includes_inventory_and_open_buy_commitments(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    settings = Settings(
+        maker_max_markets=2,
+        maker_max_capital_pct=Decimal(".03"),
+    )
+    maker = PaperMarketMaker(settings, store)
+    second = Market(
+        **{
+            **book().__dict__,
+            "condition_id": "second",
+            "yes_token": "second-yes",
+            "no_token": "second-no",
+        }
+    )
+
+    maker.run([book(), second])
+
+    balanced = maker._balanced_inventory_capital(store.inventory())
+    committed = sum(
+        (
+            Decimal(quote["price"]) * Decimal(quote["size"])
+            for quote in store.open_quotes()
+            if quote["side"] == "BUY"
+        ),
+        Decimal(0),
+    )
+    assert balanced + committed <= Decimal(300) * Decimal(".03")
+    store.close()
+
+
 def test_filled_pair_merges_to_cash_and_realizes_locked_edge(tmp_path):
     store = AuditStore(tmp_path / "paper.sqlite3")
     maker = PaperMarketMaker(Settings(maker_max_markets=1), store)
@@ -119,6 +183,7 @@ def test_filled_pair_merges_to_cash_and_realizes_locked_edge(tmp_path):
     assert result["maker_pairs_merged"] == 1
     assert Decimal(store.paper_summary()["realized_pnl"]) > 0
     assert store.directional() == {}
+    assert Decimal(store.dashboard_state()["performance"]["paired_pnl"]) > 0
     store.close()
 
 
@@ -147,6 +212,37 @@ def test_expired_one_leg_uses_capped_opposite_hedge(tmp_path):
     store.close()
 
 
+def test_old_one_leg_is_force_flattened_instead_of_held_to_resolution(tmp_path):
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    settings = Settings(
+        maker_max_markets=1,
+        maker_hedge_timeout_seconds=10,
+        maker_force_flatten_seconds=20,
+        maker_max_fee_rate=Decimal(0),
+        maker_max_flatten_loss_per_share=Decimal(".001"),
+    )
+    maker = PaperMarketMaker(settings, store)
+    store.adjust_inventory("yes", "condition", "Test market?", "YES", "5")
+    store.add_directional_buy("yes", "5", "2.50")
+    store.db.execute(
+        "UPDATE paper_directional SET opened_at = ?",
+        ((datetime.now(UTC) - timedelta(minutes=1)).isoformat(),),
+    )
+    store.db.commit()
+
+    result = maker.run(
+        [book(yes_bid=".30", yes_ask=".34", no_bid=".66", no_ask=".70")]
+    )
+
+    assert result["maker_hedge_exits"] == 1
+    assert store.directional() == {}
+    event = store.db.execute(
+        "SELECT payload FROM events WHERE kind = 'paper_hedge_flattened'"
+    ).fetchone()
+    assert '"forced": true' in event[0]
+    store.close()
+
+
 def test_abrupt_midpoint_jump_pauses_new_market(tmp_path):
     store = AuditStore(tmp_path / "paper.sqlite3")
     maker = PaperMarketMaker(
@@ -157,6 +253,28 @@ def test_abrupt_midpoint_jump_pauses_new_market(tmp_path):
     store.record_tick("condition", "yes", ".42", ".46", "test")
 
     result = maker.run([book()])
+
+    assert result["maker_markets"] == 0
+    assert result["maker_quotes"] == 0
+    store.close()
+
+
+def test_stale_two_sided_book_places_no_new_quotes(tmp_path):
+    stale = datetime.now(UTC) - timedelta(minutes=2)
+    stale_book = Market(
+        **{
+            **book().__dict__,
+            "yes_updated_at": stale,
+            "no_updated_at": stale,
+        }
+    )
+    store = AuditStore(tmp_path / "paper.sqlite3")
+    maker = PaperMarketMaker(
+        Settings(maker_max_markets=1, maker_max_book_age_seconds=30),
+        store,
+    )
+
+    result = maker.run([stale_book])
 
     assert result["maker_markets"] == 0
     assert result["maker_quotes"] == 0
@@ -179,5 +297,6 @@ def test_manual_close_uses_latest_bid_and_updates_dashboard(tmp_path):
     assert Decimal(result["realized_profit"]) > 0
     assert store.directional() == {}
     assert Decimal(dashboard["account"]["realized_pnl"]) > 0
+    assert Decimal(dashboard["performance"]["directional_pnl"]) > 0
     assert dashboard["fills"][0]["side"] == "SELL"
     store.close()

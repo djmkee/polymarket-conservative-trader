@@ -30,6 +30,8 @@ class Market:
     reward_min_size: Decimal = Decimal(0)
     reward_max_spread: Decimal = Decimal(0)
     reward_daily_rate: Decimal = Decimal(0)
+    yes_updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    no_updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     active: bool = True
 
 

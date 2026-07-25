@@ -40,6 +40,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             store = AuditStore(self.server.settings.db_path)
             try:
                 state = store.dashboard_state()
+                state["strategy"] = {
+                    "compound": self.server.settings.maker_compound,
+                    "order_equity_pct": str(
+                        self.server.settings.maker_order_equity_pct
+                    ),
+                    "minimum_shares": str(
+                        self.server.settings.maker_order_shares
+                    ),
+                    "max_capital_pct": str(
+                        self.server.settings.maker_max_capital_pct
+                    ),
+                    "max_directional_exposure_pct": str(
+                        self.server.settings.maker_max_directional_exposure_pct
+                    ),
+                    "hedge_seconds": self.server.settings.maker_hedge_timeout_seconds,
+                    "force_flatten_seconds": (
+                        self.server.settings.maker_force_flatten_seconds
+                    ),
+                    "max_book_age_seconds": (
+                        self.server.settings.maker_max_book_age_seconds
+                    ),
+                }
             finally:
                 store.close()
             self._json(state)

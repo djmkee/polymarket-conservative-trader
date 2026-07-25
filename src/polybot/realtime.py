@@ -2,6 +2,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -127,6 +128,7 @@ class LiveBookCache:
                 yes_ask=ask,
                 yes_bid_size=bid_size if bid_size is not None else market.yes_bid_size,
                 yes_ask_size=ask_size if ask_size is not None else market.yes_ask_size,
+                yes_updated_at=datetime.now(UTC),
             )
         else:
             market = replace(
@@ -135,6 +137,7 @@ class LiveBookCache:
                 no_ask=ask,
                 no_bid_size=bid_size if bid_size is not None else market.no_bid_size,
                 no_ask_size=ask_size if ask_size is not None else market.no_ask_size,
+                no_updated_at=datetime.now(UTC),
             )
         self._markets[condition_id] = market
         return [

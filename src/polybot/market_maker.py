@@ -54,12 +54,20 @@ class PaperMarketMaker:
     def _select_markets(self, markets: list[Market]) -> list[Market]:
         now = datetime.now(UTC)
         existing = {item["condition_id"] for item in self.store.inventory()}
-        existing_markets = [market for market in markets if market.condition_id in existing]
+        existing_markets = [
+            market
+            for market in markets
+            if market.condition_id in existing
+            and not self._market_book_is_stale(market, now)
+            and not self._is_toxic(market)
+        ]
         existing_markets.sort(key=lambda market: market.liquidity, reverse=True)
         available_new_slots = max(0, self.s.maker_max_markets - len(existing))
         eligible: list[tuple[Market, Decimal]] = []
         for market in markets:
             if market.condition_id in existing:
+                continue
+            if self._market_book_is_stale(market, now):
                 continue
             if market.end_time and market.end_time <= now + timedelta(
                 hours=self.s.maker_min_hours_to_end
@@ -82,16 +90,21 @@ class PaperMarketMaker:
     def _seed_complete_sets(self, markets: list[Market]) -> int:
         account = self.store.paper_account()
         cash = Decimal(account["cash"])
-        existing = {item["condition_id"] for item in self.store.inventory()}
-        total_seeded = self.s.initial_equity - cash
+        inventory = self.store.inventory()
+        existing = {item["condition_id"] for item in inventory}
+        total_seeded = self._balanced_inventory_capital(inventory)
+        equity = self._equity(self._token_books(markets))
+        capital_cap = self._maker_capital_cap(equity)
         seeded = 0
         for market in markets:
             if market.condition_id in existing:
                 continue
-            shares = max(self.s.maker_order_shares, market.min_order_size)
+            shares = self._order_size(market, equity)
+            if shares <= 0:
+                continue
             if (
                 cash < shares
-                or total_seeded + shares > self.s.maker_max_capital
+                or total_seeded + shares > capital_cap
             ):
                 continue
             self.store.adjust_inventory(
@@ -110,19 +123,25 @@ class PaperMarketMaker:
         account = self.store.paper_account()
         cash = Decimal(account["cash"])
         directional = self.store.directional()
+        equity = self._equity(books)
+        capital_cap = self._maker_capital_cap(equity)
+        deployed = self._maker_deployed_capital()
         fills = 0
         for quote in self.store.open_quotes():
             book = books.get(str(quote["token_id"]))
             price = Decimal(str(quote["price"]))
             size = Decimal(str(quote["size"]))
             fill = False
+            if book and self._book_is_stale(book):
+                self.store.close_quote(int(quote["id"]), "STALE")
+                continue
             if book and quote["side"] == "BUY":
                 position = directional.get(str(quote["token_id"]))
-                directional_shares = Decimal(position["shares"]) if position else Decimal(0)
                 fill = (
                     Decimal(str(book["ask"])) < price
                     and cash >= price * size
-                    and directional_shares + size <= self.s.maker_max_directional_shares
+                    and self._directional_room(position, price, size)
+                    and deployed + price * size <= capital_cap
                 )
             elif book and quote["side"] == "SELL":
                 position = directional.get(str(quote["token_id"]))
@@ -152,6 +171,7 @@ class PaperMarketMaker:
                     self.store.add_directional_buy(
                         str(quote["token_id"]), str(size), str(price * size)
                     )
+                    deployed += price * size
                 else:
                     sold_cost = Decimal(
                         self.store.consume_directional(str(quote["token_id"]), str(size))
@@ -227,6 +247,8 @@ class PaperMarketMaker:
             book = books.get(token_id)
             item = inventory.get(token_id)
             if not book or not item:
+                continue
+            if self._book_is_stale(book):
                 continue
             shares = Decimal(position["shares"])
             if shares <= 0:
@@ -355,8 +377,18 @@ class PaperMarketMaker:
             book = books.get(token_id)
             if not details or not book:
                 continue
+            if self._book_is_stale(book):
+                self.store.record(
+                    "paper_hedge_stale_book",
+                    {
+                        "token_id": token_id,
+                        "condition_id": details[0].condition_id,
+                    },
+                )
+                continue
             opened_at = datetime.fromisoformat(position["opened_at"])
-            if (now - opened_at).total_seconds() < self.s.maker_hedge_timeout_seconds:
+            age_seconds = (now - opened_at).total_seconds()
+            if age_seconds < self.s.maker_hedge_timeout_seconds:
                 continue
             market, outcome, opposite_token, opposite_ask = details
             shares = Decimal(position["shares"])
@@ -401,7 +433,11 @@ class PaperMarketMaker:
             fee_per_share = self.s.maker_max_fee_rate * bid * (Decimal(1) - bid)
             net_price = bid - fee_per_share - slippage
             loss_per_share = average_cost - net_price
-            if loss_per_share > self.s.maker_max_flatten_loss_per_share:
+            force_flatten = age_seconds >= self.s.maker_force_flatten_seconds
+            if (
+                loss_per_share > self.s.maker_max_flatten_loss_per_share
+                and not force_flatten
+            ):
                 self.store.record(
                     "paper_hedge_blocked",
                     {
@@ -409,6 +445,9 @@ class PaperMarketMaker:
                         "outcome": outcome,
                         "loss_per_share": loss_per_share,
                         "loss_cap": self.s.maker_max_flatten_loss_per_share,
+                        "force_flatten_in_seconds": (
+                            self.s.maker_force_flatten_seconds - age_seconds
+                        ),
                     },
                 )
                 continue
@@ -433,6 +472,7 @@ class PaperMarketMaker:
                     "shares": shares,
                     "net_price": net_price,
                     "realized_profit": proceeds - sold_cost,
+                    "forced": force_flatten,
                 },
             )
             resolved += 1
@@ -443,27 +483,29 @@ class PaperMarketMaker:
         directional = self.store.directional()
         account = self.store.paper_account()
         cash = Decimal(account["cash"])
+        equity = self._equity(self._token_books(markets))
+        capital_cap = self._maker_capital_cap(equity)
+        deployed = self._maker_deployed_capital()
+        committed = Decimal(0)
         quotes = 0
         for market in markets:
-            size = max(self.s.maker_order_shares, market.min_order_size)
+            size = self._order_size(market, equity)
+            if size <= 0:
+                continue
             yes_buy, no_buy = self._pair_buy_prices(market, directional)
             planned = (
                 ("YES", market.yes_token, yes_buy),
                 ("NO", market.no_token, no_buy),
             )
-            committed = Decimal(0)
             for outcome, token, buy in planned:
                 if buy is None:
                     continue
                 position = directional.get(token)
-                directional_shares = (
-                    Decimal(position["shares"]) if position else Decimal(0)
-                )
                 notional = buy * size
                 if (
-                    directional_shares + size
-                    <= self.s.maker_max_directional_shares
+                    self._directional_room(position, buy, size, equity)
                     and cash - committed >= notional
+                    and deployed + committed + notional <= capital_cap
                 ):
                     self.store.add_quote(
                         token,
@@ -597,8 +639,84 @@ class PaperMarketMaker:
     def _reward_eligible(self, market: Market) -> bool:
         if market.reward_max_spread <= 0:
             return False
-        size = max(self.s.maker_order_shares, market.min_order_size)
+        size = self._order_size(market, self.s.initial_equity)
         return market.reward_min_size <= size
+
+    def _order_size(self, market: Market, equity: Decimal) -> Decimal:
+        required = max(self.s.maker_order_shares, market.min_order_size)
+        if not self.s.maker_compound:
+            return required
+        target = (equity * self.s.maker_order_equity_pct).to_integral_value(
+            rounding=ROUND_DOWN
+        )
+        market_cap = (equity * self.s.max_market_exposure_pct).to_integral_value(
+            rounding=ROUND_DOWN
+        )
+        if market_cap < required:
+            return Decimal(0)
+        return min(max(required, target), market_cap)
+
+    def _maker_capital_cap(self, equity: Decimal) -> Decimal:
+        if self.s.maker_compound:
+            return equity * self.s.maker_max_capital_pct
+        return self.s.maker_max_capital
+
+    def _maker_deployed_capital(self) -> Decimal:
+        balanced = self._balanced_inventory_capital(self.store.inventory())
+        directional = sum(
+            (
+                Decimal(position["cost_basis"])
+                for position in self.store.directional().values()
+            ),
+            Decimal(0),
+        )
+        return balanced + directional
+
+    def _directional_room(
+        self,
+        position: dict[str, str] | None,
+        price: Decimal,
+        size: Decimal,
+        equity: Decimal | None = None,
+    ) -> bool:
+        if not self.s.maker_compound:
+            shares = Decimal(position["shares"]) if position else Decimal(0)
+            return shares + size <= self.s.maker_max_directional_shares
+        if equity is None:
+            state = self.store.dashboard_state()["account"]
+            equity = Decimal(state["equity"])
+        current_cost = Decimal(position["cost_basis"]) if position else Decimal(0)
+        return (
+            current_cost + price * size
+            <= equity * self.s.maker_max_directional_exposure_pct
+        )
+
+    @staticmethod
+    def _balanced_inventory_capital(inventory: list[dict[str, str]]) -> Decimal:
+        by_condition: dict[str, list[Decimal]] = {}
+        for item in inventory:
+            by_condition.setdefault(item["condition_id"], []).append(
+                Decimal(item["shares"])
+            )
+        return sum(
+            (min(shares) for shares in by_condition.values() if len(shares) >= 2),
+            Decimal(0),
+        )
+
+    def _market_book_is_stale(
+        self, market: Market, now: datetime | None = None
+    ) -> bool:
+        now = now or datetime.now(UTC)
+        oldest = min(market.yes_updated_at, market.no_updated_at)
+        return (now - oldest).total_seconds() > self.s.maker_max_book_age_seconds
+
+    def _book_is_stale(self, book: dict[str, Decimal | str | datetime]) -> bool:
+        updated_at = book.get("updated_at")
+        return (
+            not isinstance(updated_at, datetime)
+            or (datetime.now(UTC) - updated_at).total_seconds()
+            > self.s.maker_max_book_age_seconds
+        )
 
     def _record_snapshots(self, markets: list[Market]) -> None:
         for market in markets:
@@ -637,10 +755,12 @@ class PaperMarketMaker:
                 "bid": market.yes_bid,
                 "ask": market.yes_ask,
                 "question": market.question,
+                "updated_at": market.yes_updated_at,
             }
             result[market.no_token] = {
                 "bid": market.no_bid,
                 "ask": market.no_ask,
                 "question": market.question,
+                "updated_at": market.no_updated_at,
             }
         return result

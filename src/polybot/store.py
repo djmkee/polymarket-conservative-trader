@@ -462,6 +462,23 @@ class AuditStore:
             """SELECT created_at, kind, payload FROM events
                ORDER BY id DESC LIMIT 50"""
         ).fetchall()
+        performance = self.db.execute(
+            """SELECT
+                   COALESCE(SUM(CASE WHEN kind = 'paper_pair_merged'
+                       THEN CAST(json_extract(payload, '$.realized_profit') AS REAL)
+                       ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN kind IN (
+                       'paper_profit_exit',
+                       'paper_hedge_flattened',
+                       'paper_manual_close'
+                   ) THEN CAST(json_extract(payload, '$.realized_profit') AS REAL)
+                       ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN kind = 'paper_hedge_flattened'
+                       AND json_extract(payload, '$.forced') = 1 THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN kind = 'paper_hedge_blocked'
+                       THEN 1 ELSE 0 END), 0)
+               FROM events"""
+        ).fetchone()
         cash = Decimal(account["cash"])
         return {
             "mode": "paper",
@@ -474,6 +491,12 @@ class AuditStore:
                 "fees": metrics[1],
             },
             "positions": positions,
+            "performance": {
+                "paired_pnl": str(performance[0]),
+                "directional_pnl": str(performance[1]),
+                "forced_exits": performance[2],
+                "blocked_hedges": performance[3],
+            },
             "quotes": quotes,
             "fills": [
                 {

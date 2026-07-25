@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     maker_enabled: bool = True
     maker_max_markets: int = 3
     maker_order_shares: Decimal = Decimal(5)
+    maker_compound: bool = True
+    maker_order_equity_pct: Decimal = Decimal("0.02")
+    maker_max_capital_pct: Decimal = Decimal("0.20")
+    maker_max_directional_exposure_pct: Decimal = Decimal("0.02")
     maker_min_spread: Decimal = Decimal("0.02")
     maker_min_price: Decimal = Decimal("0.15")
     maker_max_price: Decimal = Decimal("0.85")
@@ -33,8 +37,10 @@ class Settings(BaseSettings):
     maker_max_directional_shares: Decimal = Decimal(5)
     maker_pair_min_edge: Decimal = Decimal("0.01")
     maker_inventory_skew_per_share: Decimal = Decimal("0.002")
-    maker_hedge_timeout_seconds: int = 90
+    maker_hedge_timeout_seconds: int = 15
+    maker_force_flatten_seconds: int = 60
     maker_max_flatten_loss_per_share: Decimal = Decimal("0.015")
+    maker_max_book_age_seconds: int = 30
     maker_toxicity_window_seconds: int = 300
     maker_max_midpoint_jump: Decimal = Decimal("0.035")
     maker_reward_weight: Decimal = Decimal("0.25")
@@ -75,6 +81,13 @@ class Settings(BaseSettings):
             raise ValueError("maker_max_markets must be between 1 and 10.")
         if self.maker_order_shares <= 0 or self.maker_max_capital <= 0:
             raise ValueError("Maker size and capital limits must be positive.")
+        maker_percentages = (
+            self.maker_order_equity_pct,
+            self.maker_max_capital_pct,
+            self.maker_max_directional_exposure_pct,
+        )
+        if any(x <= 0 or x > 1 for x in maker_percentages):
+            raise ValueError("Maker percentages must be in (0, 1].")
         if self.maker_take_profit_per_share <= 0 or self.maker_max_fee_rate < 0:
             raise ValueError("Maker profit and fee settings must be non-negative.")
         if not 0 < self.maker_pair_min_edge < 1:
@@ -83,8 +96,14 @@ class Settings(BaseSettings):
             raise ValueError("maker_inventory_skew_per_share cannot be negative.")
         if self.maker_hedge_timeout_seconds < 10:
             raise ValueError("maker_hedge_timeout_seconds must be at least 10.")
+        if self.maker_force_flatten_seconds <= self.maker_hedge_timeout_seconds:
+            raise ValueError(
+                "maker_force_flatten_seconds must exceed maker_hedge_timeout_seconds."
+            )
         if self.maker_max_flatten_loss_per_share < 0:
             raise ValueError("maker_max_flatten_loss_per_share cannot be negative.")
+        if self.maker_max_book_age_seconds < 5:
+            raise ValueError("maker_max_book_age_seconds must be at least 5.")
         if self.maker_toxicity_window_seconds < 30:
             raise ValueError("maker_toxicity_window_seconds must be at least 30.")
         if not 0 < self.maker_max_midpoint_jump < 1:
