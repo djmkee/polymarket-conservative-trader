@@ -51,6 +51,18 @@ class AuditStore:
                 notional TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS paper_directional (
+                token_id TEXT PRIMARY KEY,
+                shares TEXT NOT NULL,
+                cost_basis TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS paper_metrics (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                realized_pnl TEXT NOT NULL,
+                fees TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO paper_metrics(id, realized_pnl, fees)
+            VALUES (1, '0', '0');
             """
         )
         self.db.commit()
@@ -230,6 +242,9 @@ class AuditStore:
         inventory = self.db.execute(
             "SELECT COUNT(*) FROM paper_inventory WHERE CAST(shares AS REAL) > 0"
         ).fetchone()[0]
+        metrics = self.db.execute(
+            "SELECT realized_pnl, fees FROM paper_metrics WHERE id = 1"
+        ).fetchone()
         return {
             "initial_equity": row[0],
             "cash": row[1],
@@ -237,4 +252,67 @@ class AuditStore:
             "fills": fills,
             "open_quotes": open_quotes,
             "inventory_tokens": inventory,
+            "realized_pnl": metrics[0],
+            "fees": metrics[1],
         }
+
+    def directional(self) -> dict[str, dict[str, str]]:
+        rows = self.db.execute(
+            """SELECT token_id, shares, cost_basis FROM paper_directional
+               WHERE CAST(shares AS REAL) > 0"""
+        ).fetchall()
+        return {
+            row[0]: {"shares": row[1], "cost_basis": row[2]} for row in rows
+        }
+
+    def add_directional_buy(self, token_id: str, shares: str, cost: str) -> None:
+        from decimal import Decimal
+
+        current = self.directional().get(token_id)
+        new_shares = Decimal(shares) + (
+            Decimal(current["shares"]) if current else Decimal(0)
+        )
+        new_cost = Decimal(cost) + (
+            Decimal(current["cost_basis"]) if current else Decimal(0)
+        )
+        self.db.execute(
+            """INSERT INTO paper_directional(token_id, shares, cost_basis)
+               VALUES (?, ?, ?)
+               ON CONFLICT(token_id) DO UPDATE SET
+               shares = excluded.shares, cost_basis = excluded.cost_basis""",
+            (token_id, str(new_shares), str(new_cost)),
+        )
+        self.db.commit()
+
+    def consume_directional(self, token_id: str, shares: str) -> str:
+        from decimal import Decimal
+
+        current = self.directional().get(token_id)
+        if not current or Decimal(current["shares"]) < Decimal(shares):
+            raise RuntimeError("Insufficient directional paper position.")
+        old_shares = Decimal(current["shares"])
+        old_cost = Decimal(current["cost_basis"])
+        sold_shares = Decimal(shares)
+        sold_cost = old_cost * sold_shares / old_shares
+        self.db.execute(
+            """UPDATE paper_directional SET shares = ?, cost_basis = ?
+               WHERE token_id = ?""",
+            (str(old_shares - sold_shares), str(old_cost - sold_cost), token_id),
+        )
+        self.db.commit()
+        return str(sold_cost)
+
+    def add_paper_metrics(self, realized_pnl: str, fees: str) -> None:
+        from decimal import Decimal
+
+        current = self.db.execute(
+            "SELECT realized_pnl, fees FROM paper_metrics WHERE id = 1"
+        ).fetchone()
+        self.db.execute(
+            "UPDATE paper_metrics SET realized_pnl = ?, fees = ? WHERE id = 1",
+            (
+                str(Decimal(current[0]) + Decimal(realized_pnl)),
+                str(Decimal(current[1]) + Decimal(fees)),
+            ),
+        )
+        self.db.commit()
