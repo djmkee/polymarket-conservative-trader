@@ -24,6 +24,7 @@ class Market:
     yes_ask_size: Decimal = Decimal(0)
     no_ask_size: Decimal = Decimal(0)
     min_order_size: Decimal = Decimal(0)
+    tick_size: Decimal = Decimal("0.01")
     active: bool = True
 
 
