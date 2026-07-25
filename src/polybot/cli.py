@@ -55,3 +55,4 @@ def status() -> None:
     typer.echo(f"Counts: {summary['counts']}")
     typer.echo(f"Latest cycle: {summary['latest_cycle_at']}")
     typer.echo(summary["latest_cycle"] or "No cycle recorded.")
+    typer.echo(f"Paper account: {summary['paper']}")
