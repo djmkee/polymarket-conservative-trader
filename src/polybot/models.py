@@ -23,8 +23,15 @@ class Market:
     end_time: datetime | None
     yes_ask_size: Decimal = Decimal(0)
     no_ask_size: Decimal = Decimal(0)
+    yes_bid_size: Decimal = Decimal(0)
+    no_bid_size: Decimal = Decimal(0)
     min_order_size: Decimal = Decimal(0)
     tick_size: Decimal = Decimal("0.01")
+    reward_min_size: Decimal = Decimal(0)
+    reward_max_spread: Decimal = Decimal(0)
+    reward_daily_rate: Decimal = Decimal(0)
+    yes_updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    no_updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     active: bool = True
 
 

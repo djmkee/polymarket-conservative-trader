@@ -7,7 +7,9 @@ from typing import Any
 
 class AuditStore:
     def __init__(self, path: Path):
-        self.db = sqlite3.connect(path)
+        self.db = sqlite3.connect(path, timeout=30)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA busy_timeout=30000")
         self.db.execute(
             """CREATE TABLE IF NOT EXISTS events (
                id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, kind TEXT NOT NULL,
@@ -33,10 +35,12 @@ class AuditStore:
                 id INTEGER PRIMARY KEY,
                 token_id TEXT NOT NULL,
                 condition_id TEXT NOT NULL,
+                question TEXT NOT NULL DEFAULT '',
                 outcome TEXT NOT NULL,
                 side TEXT NOT NULL,
                 price TEXT NOT NULL,
                 size TEXT NOT NULL,
+                queue_ahead TEXT NOT NULL DEFAULT '0',
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 closed_at TEXT
@@ -54,7 +58,8 @@ class AuditStore:
             CREATE TABLE IF NOT EXISTS paper_directional (
                 token_id TEXT PRIMARY KEY,
                 shares TEXT NOT NULL,
-                cost_basis TEXT NOT NULL
+                cost_basis TEXT NOT NULL,
+                opened_at TEXT
             );
             CREATE TABLE IF NOT EXISTS paper_metrics (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -63,9 +68,48 @@ class AuditStore:
             );
             INSERT OR IGNORE INTO paper_metrics(id, realized_pnl, fees)
             VALUES (1, '0', '0');
+            CREATE TABLE IF NOT EXISTS market_ticks (
+                id INTEGER PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                condition_id TEXT NOT NULL,
+                token_id TEXT NOT NULL,
+                bid TEXT NOT NULL,
+                ask TEXT NOT NULL,
+                midpoint TEXT NOT NULL,
+                event_type TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_market_ticks_condition_time
+                ON market_ticks(condition_id, created_at);
+            CREATE TABLE IF NOT EXISTS public_market_trades (
+                id INTEGER PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                occurred_at TEXT,
+                condition_id TEXT NOT NULL,
+                token_id TEXT NOT NULL,
+                price TEXT NOT NULL,
+                size TEXT NOT NULL,
+                side TEXT NOT NULL,
+                transaction_hash TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_public_trades_token_time
+                ON public_market_trades(token_id, created_at);
             """
         )
+        self._ensure_column("paper_directional", "opened_at", "TEXT")
+        self._ensure_column(
+            "paper_quotes", "queue_ahead", "TEXT NOT NULL DEFAULT '0'"
+        )
+        self._ensure_column(
+            "paper_quotes", "question", "TEXT NOT NULL DEFAULT ''"
+        )
         self.db.commit()
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        columns = {
+            row[1] for row in self.db.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def record(self, kind: str, payload: dict[str, Any]) -> None:
         self.db.execute(
@@ -162,10 +206,22 @@ class AuditStore:
 
     def open_quotes(self) -> list[dict[str, str | int]]:
         rows = self.db.execute(
-            """SELECT id, token_id, condition_id, outcome, side, price, size
+            """SELECT id, token_id, condition_id, question, outcome, side, price, size,
+                      queue_ahead, created_at
                FROM paper_quotes WHERE status = 'OPEN'"""
         ).fetchall()
-        keys = ("id", "token_id", "condition_id", "outcome", "side", "price", "size")
+        keys = (
+            "id",
+            "token_id",
+            "condition_id",
+            "question",
+            "outcome",
+            "side",
+            "price",
+            "size",
+            "queue_ahead",
+            "created_at",
+        )
         return [dict(zip(keys, row, strict=True)) for row in rows]
 
     def add_quote(
@@ -176,18 +232,23 @@ class AuditStore:
         side: str,
         price: str,
         size: str,
+        queue_ahead: str = "0",
+        question: str = "",
     ) -> int:
         cursor = self.db.execute(
             """INSERT INTO paper_quotes
-               (token_id, condition_id, outcome, side, price, size, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
+               (token_id, condition_id, question, outcome, side, price, size,
+                queue_ahead, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
             (
                 token_id,
                 condition_id,
+                question,
                 outcome,
                 side,
                 price,
                 size,
+                queue_ahead,
                 datetime.now(UTC).isoformat(),
             ),
         )
@@ -245,6 +306,7 @@ class AuditStore:
         metrics = self.db.execute(
             "SELECT realized_pnl, fees FROM paper_metrics WHERE id = 1"
         ).fetchone()
+        ticks = self.db.execute("SELECT COUNT(*) FROM market_ticks").fetchone()[0]
         return {
             "initial_equity": row[0],
             "cash": row[1],
@@ -254,15 +316,21 @@ class AuditStore:
             "inventory_tokens": inventory,
             "realized_pnl": metrics[0],
             "fees": metrics[1],
+            "market_ticks": ticks,
         }
 
     def directional(self) -> dict[str, dict[str, str]]:
         rows = self.db.execute(
-            """SELECT token_id, shares, cost_basis FROM paper_directional
+            """SELECT token_id, shares, cost_basis, opened_at FROM paper_directional
                WHERE CAST(shares AS REAL) > 0"""
         ).fetchall()
         return {
-            row[0]: {"shares": row[1], "cost_basis": row[2]} for row in rows
+            row[0]: {
+                "shares": row[1],
+                "cost_basis": row[2],
+                "opened_at": row[3] or datetime.now(UTC).isoformat(),
+            }
+            for row in rows
         }
 
     def add_directional_buy(self, token_id: str, shares: str, cost: str) -> None:
@@ -275,12 +343,14 @@ class AuditStore:
         new_cost = Decimal(cost) + (
             Decimal(current["cost_basis"]) if current else Decimal(0)
         )
+        opened_at = current["opened_at"] if current else datetime.now(UTC).isoformat()
         self.db.execute(
-            """INSERT INTO paper_directional(token_id, shares, cost_basis)
-               VALUES (?, ?, ?)
+            """INSERT INTO paper_directional(token_id, shares, cost_basis, opened_at)
+               VALUES (?, ?, ?, ?)
                ON CONFLICT(token_id) DO UPDATE SET
-               shares = excluded.shares, cost_basis = excluded.cost_basis""",
-            (token_id, str(new_shares), str(new_cost)),
+               shares = excluded.shares, cost_basis = excluded.cost_basis,
+               opened_at = COALESCE(paper_directional.opened_at, excluded.opened_at)""",
+            (token_id, str(new_shares), str(new_cost), opened_at),
         )
         self.db.commit()
 
@@ -294,11 +364,17 @@ class AuditStore:
         old_cost = Decimal(current["cost_basis"])
         sold_shares = Decimal(shares)
         sold_cost = old_cost * sold_shares / old_shares
-        self.db.execute(
-            """UPDATE paper_directional SET shares = ?, cost_basis = ?
-               WHERE token_id = ?""",
-            (str(old_shares - sold_shares), str(old_cost - sold_cost), token_id),
-        )
+        remaining = old_shares - sold_shares
+        if remaining == 0:
+            self.db.execute(
+                "DELETE FROM paper_directional WHERE token_id = ?", (token_id,)
+            )
+        else:
+            self.db.execute(
+                """UPDATE paper_directional SET shares = ?, cost_basis = ?
+                   WHERE token_id = ?""",
+                (str(remaining), str(old_cost - sold_cost), token_id),
+            )
         self.db.commit()
         return str(sold_cost)
 
@@ -316,3 +392,288 @@ class AuditStore:
             ),
         )
         self.db.commit()
+
+    def record_tick(
+        self,
+        condition_id: str,
+        token_id: str,
+        bid: str,
+        ask: str,
+        event_type: str,
+    ) -> None:
+        from decimal import Decimal
+
+        midpoint = (Decimal(bid) + Decimal(ask)) / Decimal(2)
+        self.db.execute(
+            """INSERT INTO market_ticks
+               (created_at, condition_id, token_id, bid, ask, midpoint, event_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.now(UTC).isoformat(),
+                condition_id,
+                token_id,
+                bid,
+                ask,
+                str(midpoint),
+                event_type,
+            ),
+        )
+        self.db.commit()
+
+    def record_public_trade(
+        self,
+        condition_id: str,
+        token_id: str,
+        price: str,
+        size: str,
+        side: str,
+        transaction_hash: str | None = None,
+        occurred_at: str | None = None,
+    ) -> None:
+        self.db.execute(
+            """INSERT INTO public_market_trades
+               (created_at, occurred_at, condition_id, token_id, price, size,
+                side, transaction_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.now(UTC).isoformat(),
+                occurred_at,
+                condition_id,
+                token_id,
+                price,
+                size,
+                side.upper(),
+                transaction_hash,
+            ),
+        )
+        self.db.commit()
+
+    def public_trade_volume(
+        self,
+        token_id: str,
+        aggressor_side: str,
+        quote_price: str,
+        since_iso: str,
+        *,
+        at_or_better: str,
+    ) -> str:
+        from decimal import Decimal
+
+        comparator = "<=" if at_or_better == "below" else ">="
+        rows = self.db.execute(
+            f"""SELECT size FROM public_market_trades
+                WHERE token_id = ? AND side = ? AND created_at > ?
+                  AND CAST(price AS REAL) {comparator} CAST(? AS REAL)""",
+            (token_id, aggressor_side.upper(), since_iso, quote_price),
+        ).fetchall()
+        return str(sum((Decimal(row[0]) for row in rows), Decimal(0)))
+
+    def midpoint_jump(self, token_id: str, since_iso: str) -> str:
+        from decimal import Decimal
+
+        rows = self.db.execute(
+            """SELECT midpoint FROM market_ticks
+               WHERE token_id = ? AND created_at >= ?
+               ORDER BY id""",
+            (token_id, since_iso),
+        ).fetchall()
+        if len(rows) < 2:
+            return "0"
+        values = [Decimal(row[0]) for row in rows]
+        return str(max(values) - min(values))
+
+    def latest_book(self, token_id: str) -> dict[str, str] | None:
+        row = self.db.execute(
+            """SELECT condition_id, bid, ask, midpoint, created_at
+               FROM market_ticks WHERE token_id = ? ORDER BY id DESC LIMIT 1""",
+            (token_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "condition_id": row[0],
+            "bid": row[1],
+            "ask": row[2],
+            "midpoint": row[3],
+            "created_at": row[4],
+        }
+
+    def dashboard_state(self) -> dict[str, Any]:
+        from decimal import Decimal
+
+        account = self.paper_account()
+        directional = self.directional()
+        positions: list[dict[str, Any]] = []
+        inventory_value = Decimal(0)
+        directional_unrealized = Decimal(0)
+        for item in self.inventory():
+            book = self.latest_book(item["token_id"])
+            shares = Decimal(item["shares"])
+            midpoint = Decimal(book["midpoint"]) if book else Decimal(0)
+            market_value = shares * midpoint
+            inventory_value += market_value
+            position = directional.get(item["token_id"])
+            directional_shares = Decimal(position["shares"]) if position else Decimal(0)
+            cost_basis = Decimal(position["cost_basis"]) if position else Decimal(0)
+            directional_value = directional_shares * midpoint
+            unrealized = directional_value - cost_basis
+            directional_unrealized += unrealized
+            positions.append(
+                {
+                    **item,
+                    "midpoint": str(midpoint),
+                    "bid": book["bid"] if book else None,
+                    "ask": book["ask"] if book else None,
+                    "book_at": book["created_at"] if book else None,
+                    "market_value": str(market_value),
+                    "directional_shares": str(directional_shares),
+                    "average_cost": (
+                        str(cost_basis / directional_shares)
+                        if directional_shares > 0
+                        else None
+                    ),
+                    "unrealized_pnl": str(unrealized),
+                    "opened_at": position["opened_at"] if position else None,
+                }
+            )
+        metrics = self.db.execute(
+            "SELECT realized_pnl, fees FROM paper_metrics WHERE id = 1"
+        ).fetchone()
+        fills = self.db.execute(
+            """SELECT token_id, side, price, size, notional, created_at
+               FROM paper_fills ORDER BY id DESC LIMIT 50"""
+        ).fetchall()
+        quotes = self.open_quotes()
+        events = self.db.execute(
+            """SELECT created_at, kind, payload FROM events
+               ORDER BY id DESC LIMIT 50"""
+        ).fetchall()
+        latest_cycle = self.db.execute(
+            """SELECT payload FROM events WHERE kind = 'realtime_cycle'
+               ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        latest_cycle_payload = json.loads(latest_cycle[0]) if latest_cycle else {}
+        inventory_metadata = self.db.execute(
+            """SELECT token_id, condition_id, question, outcome
+               FROM paper_inventory"""
+        ).fetchall()
+        metadata_by_token = {
+            row[0]: {
+                "condition_id": row[1],
+                "question": row[2],
+                "outcome": row[3],
+            }
+            for row in inventory_metadata
+        }
+        metadata_by_condition = {
+            row[1]: {
+                "question": row[2],
+            }
+            for row in inventory_metadata
+        }
+        trade_events = self.db.execute(
+            """SELECT created_at, kind, payload FROM events
+               WHERE kind IN (
+                   'paper_pair_merged',
+                   'paper_profit_exit',
+                   'paper_hedge_flattened',
+                   'paper_manual_close'
+               )
+               ORDER BY id DESC LIMIT 50"""
+        ).fetchall()
+        trade_history = []
+        action_names = {
+            "paper_pair_merged": "PAIR MERGED",
+            "paper_profit_exit": "PROFIT EXIT",
+            "paper_hedge_flattened": "RISK EXIT",
+            "paper_manual_close": "MANUAL EXIT",
+        }
+        for created_at, kind, raw_payload in trade_events:
+            payload = json.loads(raw_payload)
+            token_metadata = metadata_by_token.get(str(payload.get("token_id")), {})
+            condition_metadata = metadata_by_condition.get(
+                str(payload.get("condition_id")), {}
+            )
+            action = action_names[kind]
+            if kind == "paper_hedge_flattened" and payload.get("forced"):
+                action = "FORCED EXIT"
+            trade_history.append(
+                {
+                    "created_at": created_at,
+                    "action": action,
+                    "question": (
+                        payload.get("question")
+                        or token_metadata.get("question")
+                        or condition_metadata.get("question")
+                        or "Unknown market"
+                    ),
+                    "outcome": (
+                        payload.get("outcome")
+                        or token_metadata.get("outcome")
+                        or "YES + NO"
+                    ),
+                    "shares": str(payload.get("shares", "0")),
+                    "held_seconds": payload.get("held_seconds"),
+                    "realized_profit": str(payload.get("realized_profit", "0")),
+                }
+            )
+        performance = self.db.execute(
+            """SELECT
+                   COALESCE(SUM(CASE WHEN kind = 'paper_pair_merged'
+                       THEN CAST(json_extract(payload, '$.realized_profit') AS REAL)
+                       ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN kind IN (
+                       'paper_profit_exit',
+                       'paper_hedge_flattened',
+                       'paper_manual_close'
+                   ) THEN CAST(json_extract(payload, '$.realized_profit') AS REAL)
+                       ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN kind = 'paper_hedge_flattened'
+                       AND json_extract(payload, '$.forced') = 1 THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN kind = 'paper_hedge_blocked'
+                       THEN 1 ELSE 0 END), 0)
+               FROM events"""
+        ).fetchone()
+        cash = Decimal(account["cash"])
+        return {
+            "mode": "paper",
+            "account": {
+                **account,
+                "equity": str(cash + inventory_value),
+                "inventory_value": str(inventory_value),
+                "unrealized_pnl": str(directional_unrealized),
+                "realized_pnl": metrics[0],
+                "fees": metrics[1],
+            },
+            "positions": positions,
+            "quote_target_count": int(
+                latest_cycle_payload.get("maker_quotes", len(quotes))
+            ),
+            "trade_history": trade_history,
+            "performance": {
+                "paired_pnl": str(performance[0]),
+                "directional_pnl": str(performance[1]),
+                "forced_exits": performance[2],
+                "blocked_hedges": performance[3],
+            },
+            "quotes": quotes,
+            "fills": [
+                {
+                    "token_id": row[0],
+                    "side": row[1],
+                    "price": row[2],
+                    "size": row[3],
+                    "notional": row[4],
+                    "created_at": row[5],
+                }
+                for row in fills
+            ],
+            "events": [
+                {
+                    "created_at": row[0],
+                    "kind": row[1],
+                    "payload": json.loads(row[2]),
+                }
+                for row in events
+            ],
+        }
