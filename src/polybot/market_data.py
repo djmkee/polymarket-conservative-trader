@@ -44,24 +44,33 @@ class GammaClient:
     async def close(self) -> None:
         await self.client.aclose()
 
-    async def active_binary_markets(self, limit: int = 100) -> list[Market]:
-        response = await self.client.get(
-            "/markets",
-            params={
-                "active": "true",
-                "closed": "false",
-                "limit": limit,
-                "order": "liquidityNum",
-                "ascending": "false",
-            },
-        )
-        response.raise_for_status()
+    async def active_binary_markets(self, limit: int | None = None) -> list[Market]:
+        target = limit or self.settings.discovery_limit
+        raw_markets: list[dict[str, Any]] = []
+        page_size = min(100, target)
+        while len(raw_markets) < target:
+            response = await self.client.get(
+                "/markets",
+                params={
+                    "active": "true",
+                    "closed": "false",
+                    "limit": min(page_size, target - len(raw_markets)),
+                    "offset": len(raw_markets),
+                    "order": "liquidityNum",
+                    "ascending": "false",
+                },
+            )
+            response.raise_for_status()
+            page = response.json()
+            raw_markets.extend(page)
+            if len(page) < page_size:
+                break
         result: list[Market] = []
-        for raw in response.json():
+        for raw in raw_markets:
             outcomes = [str(x).upper() for x in _jsonish(raw.get("outcomes"))]
             tokens = [str(x) for x in _jsonish(raw.get("clobTokenIds"))]
             prices = [_decimal(x) for x in _jsonish(raw.get("outcomePrices"))]
-            if outcomes != ["YES", "NO"] or len(tokens) != 2 or len(prices) != 2:
+            if len(outcomes) != 2 or len(tokens) != 2 or len(prices) != 2:
                 continue
             liquidity = _decimal(raw.get("liquidityNum", raw.get("liquidity", 0)))
             if liquidity < self.settings.min_liquidity:
@@ -104,9 +113,11 @@ class ClobClient:
             for market in markets
             for token in (market.yes_token, market.no_token)
         ]
-        response = await self.client.post("/books", json=requested)
-        response.raise_for_status()
-        books = {str(book.get("asset_id")): book for book in response.json()}
+        books: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(requested), 500):
+            response = await self.client.post("/books", json=requested[start : start + 500])
+            response.raise_for_status()
+            books.update({str(book.get("asset_id")): book for book in response.json()})
         hydrated: list[Market] = []
         for market in markets:
             yes = books.get(market.yes_token)
