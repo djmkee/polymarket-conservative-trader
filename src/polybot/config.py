@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     daily_loss_limit_pct: Decimal = Decimal("0.02")
     max_drawdown_pct: Decimal = Decimal("0.08")
     min_liquidity: Decimal = Decimal(10000)
+    discovery_limit: int = 500
     min_net_edge: Decimal = Decimal("0.0075")
     slippage_bps: Decimal = Decimal(20)
     db_path: Path = Path("polybot.sqlite3")
@@ -40,4 +41,6 @@ class Settings(BaseSettings):
         )
         if any(x <= 0 or x > 1 for x in percentages):
             raise ValueError("Risk percentages must be in (0, 1].")
+        if not 1 <= self.discovery_limit <= 5000:
+            raise ValueError("discovery_limit must be between 1 and 5000.")
         return self
