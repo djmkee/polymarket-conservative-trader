@@ -19,6 +19,12 @@ SQLite across separate scheduled runs.
 Transaction count is a secondary metric. The engine may place many quotes but
 does not manufacture fills or trade through a negative expected edge.
 
+**Pre-resolution profit exits:** Directional inventory acquired by maker BUY
+fills receives a persistent cost basis. The engine first posts a maker SELL
+above cost. It may instead sell at the executable bid when the proceeds remain
+profitable after the maximum configured taker-fee curve, slippage and the
+minimum per-share profit. Balanced seed inventory is excluded from this rule.
+
 ## Review-only
 
 **Near-resolution convergence:** High displayed probability is not proof. These
