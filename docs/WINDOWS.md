@@ -36,6 +36,12 @@ Remove it with:
 .\scripts\uninstall-scheduled-task.ps1
 ```
 
+Inspect the persistent observation history at any time:
+
+```powershell
+.\scripts\status.ps1
+```
+
 ## Files that must remain private
 
 Never commit or share:
