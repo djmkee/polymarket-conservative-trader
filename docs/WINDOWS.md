@@ -4,6 +4,8 @@
 
 1. Install Git for Windows.
 2. Install Python 3.11 or newer from python.org. Enable **Add Python to PATH**.
+   Alternatively, run `winget install --id Python.Python.3.12 -e`, then reopen
+   PowerShell.
 3. Open PowerShell and run:
 
 ```powershell
