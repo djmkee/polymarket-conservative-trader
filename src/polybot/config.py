@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     maker_max_price: Decimal = Decimal("0.85")
     maker_min_hours_to_end: int = 48
     maker_max_capital: Decimal = Decimal(60)
+    maker_take_profit_per_share: Decimal = Decimal("0.005")
+    maker_max_fee_rate: Decimal = Decimal("0.07")
+    maker_max_directional_shares: Decimal = Decimal(5)
     min_net_edge: Decimal = Decimal("0.0075")
     slippage_bps: Decimal = Decimal(20)
     db_path: Path = Path("polybot.sqlite3")
@@ -61,6 +64,8 @@ class Settings(BaseSettings):
             raise ValueError("maker_max_markets must be between 1 and 10.")
         if self.maker_order_shares <= 0 or self.maker_max_capital <= 0:
             raise ValueError("Maker size and capital limits must be positive.")
+        if self.maker_take_profit_per_share <= 0 or self.maker_max_fee_rate < 0:
+            raise ValueError("Maker profit and fee settings must be non-negative.")
         if not 0 < self.maker_min_price < self.maker_max_price < 1:
             raise ValueError("Invalid maker price range.")
         return self
